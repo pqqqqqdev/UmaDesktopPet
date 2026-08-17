@@ -1,0 +1,4 @@
+Version=2.3.6
+Archive=sqlite3mc-2.3.6-sqlite-3.53.3-win64.zip
+ArchiveSha256=789ee3d846a21d01045fb027286735447b17cccf3fb07979fbef354a815defd7
+Source=https://github.com/utelle/SQLite3MultipleCiphers/releases/download/v2.3.6/sqlite3mc-2.3.6-sqlite-3.53.3-win64.zip

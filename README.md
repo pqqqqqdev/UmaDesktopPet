@@ -1,39 +1,65 @@
 # Uma Desktop Pet
 
-i wanted an actual Oguri desktop pet, so i made one 🥕
+i wanted a proper oguri desktop pet, so i made one 🥕
 
-you can pick her up, pat her, feed her carrot jelly, and check her mood and energy.
-
-this is still an early preview, so tell me what breaks or what i should add next.
+you can click her, pat her, pick her up, feed her carrot jelly, and check her mood and energy.
 
 ## download
 
-1. grab the latest ZIP from [Releases](../../releases)
-2. extract the whole folder
-3. finish Download All in Umamusume
-4. close the game and run `UmaDesktopPet.exe`
+open [Releases](../../releases) and download:
 
-windows might complain because i havent code signed it yet.
+- `UmaDesktopPet-v0.1.0-preview.4-windows-x64.zip`
+- `UmaDesktopPet-v0.1.0-preview.4-windows-x64.zip.sha256`
 
-## requirements
+extract the whole ZIP to a short folder like:
 
-Windows 10 or 11  
-JP or Global Umamusume installation  
-Download All completed
+```text
+%USERPROFILE%\UmaDesktopPet
+```
+
+then run `UmaDesktopPet.exe`.
+
+windows may show an unknown publisher warning because i havent code signed it yet.
+
+## before you open it
+
+- Windows 10 or 11, 64-bit
+- jp or global umamusume installed
+- finish Download All in the game settings
+- close the game
+
+if setup appears, select the game folder or its `Persistent` folder.
 
 ## controls
 
-click Oguri for a reaction  
-hold left click to pat her  
-drag her to move her  
-right click to open the care menu
+- click Oguri for a reaction
+- hold left click to pat her
+- drag her to pick her up and move her
+- right click for carrots, mood, energy, settings, quiet mode, and quit
+- press `Esc` to cancel or close the menu
 
-## bugs and ideas
+## if Oguri doesnt load
 
-if something breaks or you want something added, [open an issue](../../issues).
+finish Download All, close umamusume, then choose **Change game files...** from her settings.
 
-tell me if youre on JP or Global and send me this log:
+you can select the game folder, `umamusume.exe`, `umamusume_Data`, or the `Persistent` folder.
 
-`%USERPROFILE%\AppData\LocalLow\pqqqqqdev\Uma Desktop Pet\Player.log`
+if it still breaks, open an Issue and tell me whether you use jp or global. send this log:
 
-fan project only. not affiliated with Cygames.
+```text
+%USERPROFILE%\AppData\LocalLow\pqqqqqdev\Uma Desktop Pet\Player.log
+```
+
+please send the log, not your game files.
+
+## build from source
+
+this project uses Unity `2022.3.62f2`.
+
+```powershell
+.\Tools\install-dependencies.ps1
+.\Tools\build-windows.ps1 -UnityPath "C:\path\to\2022.3.62f2\Editor\Unity.exe"
+.\Tools\package-windows.ps1 -Version 0.1.0-preview.4
+```
+
+fan project only. not affiliated with cygames. no umamusume assets are included in the download; she loads them from your own local install.

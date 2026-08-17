@@ -1,13 +1,18 @@
-## first public Oguri preview 🥕
+oguri is finally downloadable 🥕
 
-Oguri is finally downloadable.
+you can click her, pat her, pick her up, feed her carrot jelly, and check her mood and energy.
 
-you can pick her up, pat her, feed her carrot jelly, and check her mood and energy.
+i tested this exact build with jp and global, including on another global laptop.
 
-i tested this exact build on another laptop with Global installed too.
+before opening it:
 
-finish Download All in Umamusume, close the game, extract the whole ZIP, then run `UmaDesktopPet.exe`.
+1. finish Download All in umamusume
+2. close the game
+3. extract the whole ZIP to a short folder like `%USERPROFILE%\UmaDesktopPet`
+4. run `UmaDesktopPet.exe`
 
-windows might complain because i havent code signed it yet.
+windows may show an unknown publisher warning because i havent code signed it yet.
 
-if something breaks or you want something added, [open an issue](https://github.com/pqqqqqdev/UmaDesktopPet/issues).
+preview.4 fixes the unity security issue, the long-folder crash, and the slower startup we caught while testing.
+
+if something breaks, open an Issue and tell me whether you use jp or global. send `Player.log`, but dont upload your game files.

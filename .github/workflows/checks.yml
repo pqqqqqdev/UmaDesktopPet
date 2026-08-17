@@ -1,0 +1,58 @@
+name: Source checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-audit:
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse game data and build output
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -LiteralPath . -Recurse -File -Force |
+            Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' }
+
+          $forbidden = $files | Where-Object {
+            $_.Name -ieq 'master.mdb' -or
+            $_.Name -ieq 'meta' -or
+            $_.FullName -match '[\\/](dat|Library|Logs|UserSettings)[\\/]' -or
+            $_.Extension -in @('.awb', '.acb', '.bundle', '.unity3d')
+          }
+          if ($forbidden) {
+            $forbidden.FullName | ForEach-Object { Write-Error "Forbidden file: $_" }
+            throw 'Game data or generated Unity output entered the repository.'
+          }
+
+          $oversized = $files | Where-Object { $_.Length -gt 50MB }
+          if ($oversized) {
+            $oversized.FullName | ForEach-Object { Write-Error "Oversized file: $_" }
+            throw 'A file larger than 50 MB entered the repository.'
+          }
+
+      - name: Compile the standalone catalog probe
+        shell: pwsh
+        run: ./Tools/build-catalog-probe.ps1
+
+      - name: Verify dependency provenance
+        shell: pwsh
+        run: |
+          $source = Get-Content -Raw ./ThirdParty/SQLite3MultipleCiphers/SOURCE.txt
+          if ($source -notmatch 'Version=2\.3\.6' -or
+              $source -notmatch 'ArchiveSha256=789ee3d846a21d01045fb027286735447b17cccf3fb07979fbef354a815defd7') {
+            throw 'SQLite3MC provenance or checksum is missing.'
+          }
+
+          if (-not (Test-Path ./ThirdParty/UniWindowController/LICENSE.md)) {
+            throw 'UniWindowController license is missing.'
+          }

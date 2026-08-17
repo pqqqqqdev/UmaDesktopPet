@@ -1,0 +1,16 @@
+UmaDesktopPet standalone prototype uses the following third-party software.
+
+SQLite3 Multiple Ciphers 2.3.6
+Copyright (c) 2019-2026 Ulrich Telle
+https://github.com/utelle/SQLite3MultipleCiphers
+License: MIT
+The bundled SQLite library is based on SQLite, which is in the public domain.
+The complete license text is kept under ThirdParty/SQLite3MultipleCiphers/.
+
+UniWindowController 0.9.8
+Copyright (c) 2020 Kirurobo
+https://github.com/kirurobo/UniWindowController
+License: MIT
+The package is pinned to commit 304f9ba2aa4a8fae7f3c71f38118c44722a2f6cc.
+The complete license text is provided by the pinned package and will be copied
+into the packaged application's Licenses directory.
