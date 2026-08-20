@@ -18,8 +18,37 @@ namespace UmaDesktopPet.Standalone.Editor
         private const string ScenePath = GeneratedDirectory + "/Bootstrap.unity";
         private const string RendererPath = GeneratedDirectory + "/PetRenderer.asset";
         private const string PipelinePath = GeneratedDirectory + "/PetPipeline.asset";
+        private const string RecordingToolsDefine = "UMA_RECORDING_TOOLS";
+        private const string RecordingOnlyMarker =
+            "RECORDING_ONLY_DO_NOT_SHIP.txt";
+        private const string RecordingLauncher =
+            "Launch-Recording-Tools.cmd";
 
         public static void Build()
+        {
+            BuildPlayer(BuildOptions.StrictMode, null, false);
+        }
+
+        public static void BuildDevelopment()
+        {
+            BuildPlayer(
+                BuildOptions.StrictMode | BuildOptions.Development,
+                null,
+                false);
+        }
+
+        public static void BuildRecording()
+        {
+            BuildPlayer(
+                BuildOptions.StrictMode,
+                new[] { RecordingToolsDefine },
+                true);
+        }
+
+        private static void BuildPlayer(
+            BuildOptions buildOptions,
+            string[] extraScriptingDefines,
+            bool recordingOnly)
         {
             string outputPath = ReadArgument("-umaOutputPath");
             if (string.IsNullOrWhiteSpace(outputPath))
@@ -28,7 +57,13 @@ namespace UmaDesktopPet.Standalone.Editor
             }
 
             outputPath = Path.GetFullPath(outputPath);
-            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            string outputDirectory = Path.GetDirectoryName(outputPath);
+            Directory.CreateDirectory(outputDirectory);
+            if (recordingOnly)
+            {
+                WriteRecordingOnlyMarker(outputDirectory);
+            }
+            EnsureRecordingDefineIsNotGlobal();
             ConfigurePlayer();
             ConfigureRenderPipeline();
             CreateBootstrapScene();
@@ -38,7 +73,9 @@ namespace UmaDesktopPet.Standalone.Editor
                 scenes = new[] { ScenePath },
                 locationPathName = outputPath,
                 target = BuildTarget.StandaloneWindows64,
-                options = BuildOptions.StrictMode
+                options = buildOptions,
+                extraScriptingDefines = extraScriptingDefines ??
+                    new string[0]
             };
 
             BuildReport report = BuildPipeline.BuildPlayer(options);
@@ -50,8 +87,55 @@ namespace UmaDesktopPet.Standalone.Editor
                     report.summary.totalWarnings + " warnings).");
             }
 
-            CopySupportFiles(Path.GetDirectoryName(outputPath));
+            CopySupportFiles(outputDirectory);
+            if (recordingOnly)
+            {
+                File.WriteAllText(
+                    Path.Combine(outputDirectory, RecordingLauncher),
+                    "@echo off\r\n" +
+                    "setlocal\r\n" +
+                    "start \"\" /D \"%~dp0\" \"%~dp0UmaDesktopPet.exe\" " +
+                    "--recording-tools\r\n");
+            }
+            else
+            {
+                DeleteIfPresent(Path.Combine(outputDirectory, RecordingOnlyMarker));
+                DeleteIfPresent(Path.Combine(outputDirectory, RecordingLauncher));
+            }
             Debug.Log("Built standalone local prototype: " + outputPath);
+        }
+
+        private static void WriteRecordingOnlyMarker(string outputDirectory)
+        {
+            File.WriteAllText(
+                Path.Combine(outputDirectory, RecordingOnlyMarker),
+                "This local player contains temporary recording controls.\r\n" +
+                "Do not package or publish this folder.\r\n");
+        }
+
+        private static void DeleteIfPresent(string path)
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+
+        private static void EnsureRecordingDefineIsNotGlobal()
+        {
+            string defines = PlayerSettings.GetScriptingDefineSymbolsForGroup(
+                BuildTargetGroup.Standalone);
+            string[] values = (defines ?? string.Empty).Split(';');
+            if (values.Any(value => string.Equals(
+                value.Trim(),
+                RecordingToolsDefine,
+                StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    RecordingToolsDefine +
+                    " must be supplied only through BuildPlayerOptions." +
+                    " Remove it from the global Standalone defines.");
+            }
         }
 
         private static void ConfigurePlayer()
@@ -59,8 +143,10 @@ namespace UmaDesktopPet.Standalone.Editor
             PlayerSettings.companyName = "pqqqqqdev";
             PlayerSettings.productName = "Uma Desktop Pet";
             PlayerSettings.bundleVersion = "0.1.0";
-            PlayerSettings.defaultScreenWidth = 684;
-            PlayerSettings.defaultScreenHeight = 480;
+            PlayerSettings.defaultScreenWidth =
+                DesktopWindowController.NativeWindowWidth;
+            PlayerSettings.defaultScreenHeight =
+                DesktopWindowController.NativeWindowHeight;
             PlayerSettings.fullScreenMode = FullScreenMode.Windowed;
             PlayerSettings.allowFullscreenSwitch = false;
             PlayerSettings.resizableWindow = false;
@@ -186,6 +272,15 @@ namespace UmaDesktopPet.Standalone.Editor
                 Path.Combine(
                     licensesDirectory,
                     "UniWindowController-MIT.txt"));
+            CopySupportFile(
+                Path.Combine(
+                    projectDirectory,
+                    "ThirdParty",
+                    "BootstrapIcons",
+                    "LICENSE"),
+                Path.Combine(
+                    licensesDirectory,
+                    "BootstrapIcons-MIT.txt"));
         }
 
         private static void CopySupportFile(string source, string destination)

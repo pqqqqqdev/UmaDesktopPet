@@ -20,15 +20,18 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private OguriPetAnimationController _motions;
         private PetNeedsState _needs;
+        private PetFocusState _focus;
         private PetInteractionController _interaction;
         private bool _initialized;
         private float _nextReactionAt;
         private AmbientReaction _lastReaction;
         private int _sameReactionCount;
+        private FocusSessionStatus _lastFocusStatus;
 
         public void Initialize(
             OguriPetAnimationController motions,
             PetNeedsState needs,
+            PetFocusState focus,
             PetInteractionController interaction)
         {
             if (_initialized)
@@ -48,10 +51,17 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 throw new ArgumentNullException("interaction");
             }
+            if (focus == null)
+            {
+                throw new ArgumentNullException("focus");
+            }
 
             _motions = motions;
             _needs = needs;
+            _focus = focus;
             _interaction = interaction;
+            _lastFocusStatus = _focus.Status;
+            _focus.StateChanged += HandleFocusStateChanged;
             _initialized = true;
             ScheduleNext(
                 MinimumFirstReactionSeconds,
@@ -70,6 +80,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             // reaction retries soon instead of disappearing for another two
             // minutes because the menu happened to be open at the due time.
             if (_needs.QuietMode || _needs.IsLowEnergy ||
+                _focus.IsSessionActive ||
                 _interaction.IsUserInteractionActive || _motions.IsBusy)
             {
                 ScheduleNext(
@@ -129,6 +140,35 @@ namespace UmaDesktopPet.Standalone.Runtime
         {
             _nextReactionAt = Time.unscaledTime +
                 UnityEngine.Random.Range(minimumSeconds, maximumSeconds);
+        }
+
+        private void HandleFocusStateChanged(PetFocusSnapshot snapshot)
+        {
+            if (!_initialized)
+            {
+                return;
+            }
+
+            bool wasActive = _lastFocusStatus == FocusSessionStatus.Running ||
+                _lastFocusStatus == FocusSessionStatus.Paused;
+            bool isFinished = snapshot.Status == FocusSessionStatus.Idle ||
+                snapshot.Status == FocusSessionStatus.RewardReady;
+            _lastFocusStatus = snapshot.Status;
+
+            // When a study session ends or is stopped, give Oguri a full quiet
+            // interval instead of immediately replaying a blocked greeting.
+            if (wasActive && isFinished)
+            {
+                ScheduleNext(MinimumReactionSeconds, MaximumReactionSeconds);
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (_focus != null)
+            {
+                _focus.StateChanged -= HandleFocusStateChanged;
+            }
         }
 
         private enum AmbientReaction

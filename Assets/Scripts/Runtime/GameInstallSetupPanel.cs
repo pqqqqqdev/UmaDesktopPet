@@ -46,6 +46,10 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         public void Show(bool allowCancel, string message, string attemptedPath = null)
         {
+            if (_window != null)
+            {
+                _window.SetFullSurfaceVisible(true);
+            }
             _allowCancel = allowCancel;
             _message = message ?? string.Empty;
             _visible = true;
@@ -75,6 +79,10 @@ namespace UmaDesktopPet.Standalone.Runtime
             _checking = false;
             _folderPicker = null;
             SetFileDropEnabled(false);
+            if (_window != null)
+            {
+                _window.SetFullSurfaceVisible(false);
+            }
         }
 
         private void Update()
@@ -108,12 +116,28 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
+            Matrix4x4 previousMatrix = DesktopWindowLayout.BeginGui();
+            try
+            {
+                DrawGui();
+            }
+            finally
+            {
+                DesktopWindowLayout.EndGui(previousMatrix);
+            }
+        }
+
+        private void DrawGui()
+        {
+
             float width = Mathf.Min(
                 DesktopWindowController.SidePanelWidth - 16.0f,
-                Screen.width - 20.0f);
-            float height = Mathf.Min(456.0f, Screen.height - 20.0f);
+                DesktopWindowLayout.LogicalWidth - 20.0f);
+            float height = Mathf.Min(
+                456.0f,
+                DesktopWindowLayout.LogicalHeight - 20.0f);
             float x = 8.0f;
-            float y = (Screen.height - height) * 0.5f;
+            float y = (DesktopWindowLayout.LogicalHeight - height) * 0.5f;
             Rect panel = new Rect(x, y, width, height);
 
             Color oldColor = GUI.color;

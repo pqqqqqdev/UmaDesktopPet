@@ -26,7 +26,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public void Initialize(
             Camera camera,
             Transform visualFrame,
-            GameObject characterRoot,
+            GameObject renderRoot,
             OguriPetAnimationController motions)
         {
             if (camera == null)
@@ -37,9 +37,9 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 throw new ArgumentNullException("visualFrame");
             }
-            if (characterRoot == null)
+            if (renderRoot == null)
             {
-                throw new ArgumentNullException("characterRoot");
+                throw new ArgumentNullException("renderRoot");
             }
             if (motions == null)
             {
@@ -48,14 +48,14 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             _camera = camera;
             _visualFrame = visualFrame;
-            _renderers = characterRoot.GetComponentsInChildren<Renderer>(true);
+            _renderers = renderRoot.GetComponentsInChildren<Renderer>(true);
             if (_renderers.Length == 0)
             {
                 throw new InvalidOperationException(
                     "Drag framing requires at least one character renderer.");
             }
             foreach (SkinnedMeshRenderer renderer in
-                characterRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                renderRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
                 renderer.updateWhenOffscreen = true;
             }

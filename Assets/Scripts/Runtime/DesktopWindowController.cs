@@ -16,15 +16,50 @@ namespace UmaDesktopPet.Standalone.Runtime
     public sealed class DesktopWindowController : MonoBehaviour
     {
         public const int PetViewportWidth = 360;
-        public const int SidePanelWidth = 324;
+        public const int SidePanelWidth = 360;
         public const int NativeWindowWidth = PetViewportWidth + SidePanelWidth;
         public const int NativeWindowHeight = 480;
+        public const int WindowAspectWidth = 3;
+        public const int WindowAspectHeight = 2;
+        public const int MinimumWindowWidth = 540;
+        public const int MinimumWindowHeight = 360;
+        public const int MaximumWindowWidth = 1440;
+        public const int MaximumWindowHeight = 960;
 
         private const float SidePanelCloseTimeoutSeconds = 2.0f;
         private const float SidePanelOpenTimeoutSeconds = 2.0f;
         private const float SidePanelSizeTolerancePixels = 2.0f;
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
         private const uint SystemParametersInfoGetWorkArea = 0x0030;
+        private const int ResizeGutterDips = 8;
+        private const uint DefaultDpi = 96;
+        private const int WindowLongWindowProcedure = -4;
+        private const uint WindowMessageGetMinMaxInfo = 0x0024;
+        private const uint WindowMessageNcHitTest = 0x0084;
+        private const uint WindowMessageNcLeftButtonDown = 0x00A1;
+        private const uint WindowMessageSizing = 0x0214;
+        private const uint WindowMessageEnterSizeMove = 0x0231;
+        private const uint WindowMessageExitSizeMove = 0x0232;
+        private const uint MonitorDefaultToNearest = 0x00000002;
+        private const int VirtualKeyLeftButton = 0x01;
+
+        private const int HitTestLeft = 10;
+        private const int HitTestRight = 11;
+        private const int HitTestTop = 12;
+        private const int HitTestTopLeft = 13;
+        private const int HitTestTopRight = 14;
+        private const int HitTestBottom = 15;
+        private const int HitTestBottomLeft = 16;
+        private const int HitTestBottomRight = 17;
+
+        private const int SizingLeft = 1;
+        private const int SizingRight = 2;
+        private const int SizingTop = 3;
+        private const int SizingTopLeft = 4;
+        private const int SizingTopRight = 5;
+        private const int SizingBottom = 6;
+        private const int SizingBottomLeft = 7;
+        private const int SizingBottomRight = 8;
 #endif
 
         [Header("Window")]
@@ -52,6 +87,13 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _hitTestWasEnabled;
         private bool _clickThroughWasEnabled;
         private bool _sidePanelVisible;
+        private bool _fullSurfaceOverrideVisible = true;
+        private bool _windowRegionClippedToPet;
+        private int _windowRegionWidth;
+        private int _windowRegionHeight;
+        private bool _loggedWindowRegionFailure;
+        private bool _fullRegionRevealPending;
+        private Coroutine _fullRegionRevealCoroutine;
         private Vector2 _compactWindowPosition;
         private Vector2 _compactWindowSize;
         private Vector2 _dragWindowOffset;
@@ -67,6 +109,46 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _sidePanelClosePending;
         private bool _sidePanelCloseGeometryApplied;
         private bool _sidePanelCameraManaged;
+        private IntPtr _previousWindowProcedure;
+        private IntPtr _resizeWindowProcedurePointer;
+        private bool _resizeBridgeInstalled;
+        private bool _nativeSizing;
+        private bool _cursorInResizeGutter;
+        private bool _resizeHitTestOverrideActive;
+        private bool _resizeHitTestWasEnabled;
+        private bool _resizeClickThroughWasEnabled;
+        private bool _resizeWindowProcedureFaulted;
+        private bool _resizeWindowProcedureFaultLogged;
+        private NativeRect _nativeSizingStartRect;
+        private bool _hasNativeSizingStartRect;
+        private bool _managedSizing;
+        private bool _leftMouseWasDown;
+        private bool _managedResizeInputSuppressedUntilRelease;
+        private bool _nativeSizingObservedSincePoll;
+        private bool _managedResizeApplied;
+        private bool _managedResizeCompletionLogged;
+        private int _managedSizingEdge;
+        private NativePoint _managedSizingStartCursor;
+        private NativeRect _managedSizingStartRect;
+        private bool _managedResizeBeginPending;
+        private int _pendingManagedSizingEdge;
+        private IntPtr _pendingManagedSizingWindow;
+        private NativePoint _pendingManagedSizingCursor;
+        private NativeRect _pendingManagedSizingRect;
+        private bool _pendingManagedSizingSnapshotValid;
+
+        // A native WndProc delegate must stay rooted for as long as Windows can call
+        // its function pointer. Static ownership also protects a late teardown call
+        // if another native hook was installed above ours.
+        private static WindowProcedure s_resizeWindowProcedure;
+        private static DesktopWindowController s_resizeWindowOwner;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct NativeRect
@@ -87,6 +169,32 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeMinMaxInfo
+        {
+            public NativePoint Reserved;
+            public NativePoint MaxSize;
+            public NativePoint MaxPosition;
+            public NativePoint MinTrackSize;
+            public NativePoint MaxTrackSize;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct NativeMonitorInfo
+        {
+            public int Size;
+            public NativeRect Monitor;
+            public NativeRect Work;
+            public uint Flags;
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        private delegate IntPtr WindowProcedure(
+            IntPtr windowHandle,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam);
+
         [Flags]
         private enum SetWindowPosFlags : uint
         {
@@ -94,6 +202,9 @@ namespace UmaDesktopPet.Standalone.Runtime
             NoActivate = 0x0010,
             NoOwnerZOrder = 0x0200
         }
+
+        [DllImport("LibUniWinC", CallingConvention = CallingConvention.Winapi)]
+        private static extern IntPtr GetWindowHandle();
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -106,6 +217,58 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetActiveWindow();
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+        private static extern IntPtr GetWindowLongPtr(
+            IntPtr windowHandle,
+            int index);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+        private static extern IntPtr SetWindowLongPtr(
+            IntPtr windowHandle,
+            int index,
+            IntPtr newValue);
+
+        [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
+        private static extern IntPtr CallWindowProc(
+            IntPtr previousWindowProcedure,
+            IntPtr windowHandle,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam);
+
+        [DllImport("user32.dll", EntryPoint = "DefWindowProcW")]
+        private static extern IntPtr DefWindowProc(
+            IntPtr windowHandle,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetCursorPos(out NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int virtualKey);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr windowHandle);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(
+            IntPtr windowHandle,
+            uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromRect(
+            ref NativeRect rectangle,
+            uint flags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetMonitorInfo(
+            IntPtr monitorHandle,
+            ref NativeMonitorInfo monitorInfo);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -123,6 +286,23 @@ namespace UmaDesktopPet.Standalone.Runtime
             int width,
             int height,
             SetWindowPosFlags flags);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern IntPtr CreateRectRgn(
+            int left,
+            int top,
+            int right,
+            int bottom);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int SetWindowRgn(
+            IntPtr windowHandle,
+            IntPtr region,
+            [MarshalAs(UnmanagedType.Bool)] bool redraw);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DeleteObject(IntPtr value);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -157,6 +337,113 @@ namespace UmaDesktopPet.Standalone.Runtime
         public bool IsDragging
         {
             get { return _isDragging; }
+        }
+
+        /// <summary>
+        /// True while Windows is running its native edge/corner sizing loop.
+        /// </summary>
+        public bool IsResizing
+        {
+            get
+            {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                return _nativeSizing || _managedSizing;
+#else
+                return false;
+#endif
+            }
+        }
+
+        /// <summary>
+        /// True when a user should be able to resize the native window by dragging
+        /// one of its invisible edges or corners. Keeping this tied to the visible
+        /// side panel prevents the transparent reserved half from feeling like a
+        /// large empty pet window while contextual UI is closed.
+        /// </summary>
+        public bool IsInteractiveResizeEnabled
+        {
+            get
+            {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                return ShouldOfferInteractiveResize(
+                    _sidePanelVisible,
+                    _fullSurfaceOverrideVisible,
+                    _isReady,
+                    _resizeBridgeInstalled,
+                    _fullRegionRevealPending);
+#else
+                return false;
+#endif
+            }
+        }
+
+        public static bool ShouldOfferInteractiveResize(
+            bool sidePanelVisible,
+            bool fullSurfaceOverrideVisible,
+            bool windowReady,
+            bool nativeResizeAvailable,
+            bool fullRegionRevealPending)
+        {
+            return sidePanelVisible && !fullSurfaceOverrideVisible &&
+                windowReady && nativeResizeAvailable &&
+                !fullRegionRevealPending;
+        }
+
+        public static bool ShouldClipWindowToPet(
+            bool sidePanelVisible,
+            bool fullSurfaceOverrideVisible)
+        {
+            return !sidePanelVisible && !fullSurfaceOverrideVisible;
+        }
+
+        public static RectInt CalculatePetOnlyWindowRegion(
+            int windowRegionWidth,
+            int windowRegionHeight)
+        {
+            int safeWidth = Math.Max(1, windowRegionWidth);
+            int safeHeight = Math.Max(1, windowRegionHeight);
+            int petWidth = (int)Math.Round(
+                safeWidth * (PetViewportWidth / (double)NativeWindowWidth),
+                MidpointRounding.AwayFromZero);
+            petWidth = Math.Max(1, Math.Min(safeWidth, petWidth));
+            return new RectInt(
+                safeWidth - petWidth,
+                0,
+                petWidth,
+                safeHeight);
+        }
+
+        public bool IsPetOnlyWindowRegionActive
+        {
+            get
+            {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                return _windowRegionClippedToPet;
+#else
+                return false;
+#endif
+            }
+        }
+
+        /// <summary>
+        /// Pure, platform-independent sizing rule used by editor smoke tests and
+        /// runtime callers. The returned integers always form an exact 3:2 pair and
+        /// stay within the public minimum and maximum bounds.
+        /// </summary>
+        public static void ConstrainClientSize(
+            int requestedWidth,
+            int requestedHeight,
+            out int constrainedWidth,
+            out int constrainedHeight)
+        {
+            ConstrainClientSizeCore(
+                requestedWidth,
+                requestedHeight,
+                0,
+                MaximumWindowWidth,
+                MaximumWindowHeight,
+                out constrainedWidth,
+                out constrainedHeight);
         }
 
         /// <summary>
@@ -212,6 +499,41 @@ namespace UmaDesktopPet.Standalone.Runtime
         }
 
         /// <summary>
+        /// Native outer-window size. With the borderless resize bridge installed,
+        /// this is also the client size. Returns zero outside a Windows player.
+        /// </summary>
+        public Vector2 WindowSize
+        {
+            get
+            {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                return _nativeWindow != null
+                    ? _nativeWindow.windowSize
+                    : Vector2.zero;
+#else
+                return Vector2.zero;
+#endif
+            }
+        }
+
+        /// <summary>
+        /// Current native client size, or zero outside a built Windows player.
+        /// </summary>
+        public Vector2 ClientSize
+        {
+            get
+            {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                return _nativeWindow != null
+                    ? _nativeWindow.clientSize
+                    : Vector2.zero;
+#else
+                return Vector2.zero;
+#endif
+            }
+        }
+
+        /// <summary>
         /// Raised after a drag starts or ends. Interaction code can use this to
         /// suppress pet click reactions while the native window is moving.
         /// </summary>
@@ -228,6 +550,14 @@ namespace UmaDesktopPet.Standalone.Runtime
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
             Application.runInBackground = true;
             Screen.fullScreenMode = FullScreenMode.Windowed;
+            ConstrainClientSizeCore(
+                windowWidth,
+                windowHeight,
+                0,
+                MaximumWindowWidth,
+                MaximumWindowHeight,
+                out windowWidth,
+                out windowHeight);
             Screen.SetResolution(windowWidth, windowHeight, FullScreenMode.Windowed);
 
             _nativeWindow = FindAnyObjectByType<UniWindowController>();
@@ -281,6 +611,13 @@ namespace UmaDesktopPet.Standalone.Runtime
             _nativeWindow.windowSize = new Vector2(windowWidth, windowHeight);
             yield return null;
 
+            if (!InstallNativeResizeBridge())
+            {
+                Debug.LogWarning(
+                    "Native edge resizing could not be enabled; the desktop pet " +
+                    "will keep its current fixed window size.");
+            }
+
             _nativeWindow.isTopmost = alwaysOnTop;
             if (placeAtPrimaryBottomRight)
             {
@@ -288,6 +625,10 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             _isReady = true;
+            // No native region could have been applied before readiness. A retained
+            // full-surface request is therefore already satisfied at this point.
+            _fullRegionRevealPending = false;
+            RefreshWindowRegionIfNeeded(true);
             _nextTopmostCheck = Time.unscaledTime + 1.0f;
             Debug.Log(
                 "Desktop window ready: size=" + _nativeWindow.windowSize +
@@ -312,6 +653,18 @@ namespace UmaDesktopPet.Standalone.Runtime
             if (!_isReady)
             {
                 return;
+            }
+
+            UpdateManagedResizeFallback();
+            UpdateResizeHitTestOverride();
+            RefreshWindowRegionIfNeeded(false);
+            if (_resizeWindowProcedureFaulted &&
+                !_resizeWindowProcedureFaultLogged)
+            {
+                _resizeWindowProcedureFaultLogged = true;
+                Debug.LogWarning(
+                    "A native resize message could not be handled. The original " +
+                    "Unity/UniWindow window procedure was allowed to continue.");
             }
 
             if (_isDragging)
@@ -365,8 +718,119 @@ namespace UmaDesktopPet.Standalone.Runtime
         }
 
         /// <summary>
+        /// Keeps the complete backing surface visible for setup and recovery UI.
+        /// Requests made before the native window is ready are retained.
+        /// </summary>
+        public void SetFullSurfaceVisible(bool visible)
+        {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            if (_fullSurfaceOverrideVisible == visible)
+            {
+                return;
+            }
+
+            _fullSurfaceOverrideVisible = visible;
+            if (visible)
+            {
+                EndDrag();
+                if (_managedSizing || _managedResizeBeginPending)
+                {
+                    EndManagedResizeFallback(true);
+                }
+                ReleaseResizeHitTestOverride();
+                RequestFullWindowRegionAfterRender();
+            }
+            else
+            {
+                CancelFullWindowRegionReveal();
+                RefreshWindowRegionIfNeeded(true);
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Applies an exact scale relative to the default 720x480 client area.
+        /// The request is clamped to the 3:2 limits and the nearest monitor's work
+        /// area. This is intentionally not persisted yet.
+        /// </summary>
+        public bool TrySetWindowScale(float scale)
+        {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            if (!_isReady || !_resizeBridgeInstalled ||
+                float.IsNaN(scale) || float.IsInfinity(scale) || scale <= 0.0f)
+            {
+                return false;
+            }
+
+            IntPtr windowHandle = AcquirePlayerWindowHandle();
+            NativeRect currentRectangle;
+            if (windowHandle == IntPtr.Zero ||
+                !GetWindowRect(windowHandle, out currentRectangle))
+            {
+                return false;
+            }
+
+            NativeRect workArea;
+            int maximumWidth;
+            int maximumHeight;
+            GetResizeLimitsForWindow(
+                windowHandle,
+                out workArea,
+                out maximumWidth,
+                out maximumHeight);
+
+            int requestedWidth = (int)Math.Round(
+                NativeWindowWidth * (double)scale,
+                MidpointRounding.AwayFromZero);
+            int requestedHeight = (int)Math.Round(
+                NativeWindowHeight * (double)scale,
+                MidpointRounding.AwayFromZero);
+            int constrainedWidth;
+            int constrainedHeight;
+            ConstrainClientSizeCore(
+                requestedWidth,
+                requestedHeight,
+                0,
+                maximumWidth,
+                maximumHeight,
+                out constrainedWidth,
+                out constrainedHeight);
+
+            NativeRect targetRectangle = new NativeRect
+            {
+                Right = currentRectangle.Right,
+                Bottom = currentRectangle.Bottom,
+                Left = currentRectangle.Right - constrainedWidth,
+                Top = currentRectangle.Bottom - constrainedHeight
+            };
+            ClampRectangleToWorkArea(ref targetRectangle, workArea);
+
+            const SetWindowPosFlags Flags =
+                SetWindowPosFlags.NoZOrder |
+                SetWindowPosFlags.NoActivate |
+                SetWindowPosFlags.NoOwnerZOrder;
+            bool resized = SetWindowPos(
+                windowHandle,
+                IntPtr.Zero,
+                targetRectangle.Left,
+                targetRectangle.Top,
+                targetRectangle.Width,
+                targetRectangle.Height,
+                Flags);
+            if (resized)
+            {
+                RefreshWindowRegionIfNeeded(true);
+            }
+            return resized;
+#else
+            return false;
+#endif
+        }
+
+        /// <summary>
         /// Toggles contextual UI in the fixed transparent side panel. Native geometry
-        /// never changes, which keeps the pet and compositor surface stable.
+        /// never changes, which keeps the pet and compositor surface stable. Manual
+        /// edge/corner resizing is available only while this panel is visible.
         /// </summary>
         public void SetSidePanelVisible(bool visible, int panelWidth)
         {
@@ -381,10 +845,31 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             EndDrag();
-            // The native surface remains permanently wide. Hidden side-panel pixels
-            // are transparent and click-through, so opening contextual UI is only a
-            // logical visibility change and can never expose a stale resize frame.
+            if (!visible)
+            {
+                if (_managedSizing || _managedResizeBeginPending)
+                {
+                    EndManagedResizeFallback(true);
+                }
+                else
+                {
+                    ClearPendingManagedResizeBegin();
+                }
+                ReleaseResizeHitTestOverride();
+                CancelFullWindowRegionReveal();
+            }
+            // The Unity backing surface remains permanently wide. Windows clips the
+            // hidden side-panel half from the actual window, so toggling contextual UI
+            // does not resize the backbuffer or expose a stale frame.
             _sidePanelVisible = visible;
+            if (visible)
+            {
+                RequestFullWindowRegionAfterRender();
+            }
+            else
+            {
+                RefreshWindowRegionIfNeeded(true);
+            }
 #endif
         }
 
@@ -396,6 +881,12 @@ namespace UmaDesktopPet.Standalone.Runtime
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
             if (!_isReady || _nativeWindow == null)
+            {
+                return false;
+            }
+            _cursorInResizeGutter = IsCursorInResizeGutter();
+            if (_nativeSizing || _managedSizing || _cursorInResizeGutter ||
+                _resizeHitTestOverrideActive)
             {
                 return false;
             }
@@ -468,12 +959,34 @@ namespace UmaDesktopPet.Standalone.Runtime
             if (!hasFocus)
             {
                 EndDrag();
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                EndManagedResizeFallback(true);
+#endif
             }
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            else
+            {
+                // UniWindow can reacquire the HWND after focus changes. Force the
+                // region to be applied to whichever handle is current now.
+                _windowRegionWidth = 0;
+                _windowRegionHeight = 0;
+                RefreshWindowRegionIfNeeded(true);
+            }
+#endif
         }
 
         private void OnDisable()
         {
             EndDrag();
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            CancelFullWindowRegionReveal();
+            EndManagedResizeFallback(true);
+            ReleaseResizeHitTestOverride();
+            if (!_isQuitting)
+            {
+                RestoreFullWindowRegion();
+            }
+#endif
         }
 
         private void OnApplicationQuit()
@@ -484,6 +997,14 @@ namespace UmaDesktopPet.Standalone.Runtime
         private void OnDestroy()
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            CancelFullWindowRegionReveal();
+            EndManagedResizeFallback(true);
+            ReleaseResizeHitTestOverride();
+            if (!_isQuitting)
+            {
+                RestoreFullWindowRegion();
+            }
+            RemoveNativeResizeBridge();
             if (_nativeWindow != null)
             {
                 _nativeWindow.OnDropFiles -= HandleDroppedFiles;
@@ -510,6 +1031,1040 @@ namespace UmaDesktopPet.Standalone.Runtime
         }
 
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        private void RequestFullWindowRegionAfterRender()
+        {
+            if (_fullRegionRevealPending)
+            {
+                return;
+            }
+
+            _fullRegionRevealPending = true;
+            if (!_isReady)
+            {
+                return;
+            }
+            _fullRegionRevealCoroutine = StartCoroutine(
+                RevealFullWindowRegionAfterRender());
+        }
+
+        private IEnumerator RevealFullWindowRegionAfterRender()
+        {
+            // Wait through one complete render after the request. Setup can be
+            // opened from another component's OnGUI, after its own draw pass has
+            // already run for the current frame.
+            yield return null;
+            yield return new WaitForEndOfFrame();
+            _fullRegionRevealCoroutine = null;
+            if (!_fullRegionRevealPending)
+            {
+                yield break;
+            }
+
+            _fullRegionRevealPending = false;
+            RefreshWindowRegionIfNeeded(true);
+        }
+
+        private void CancelFullWindowRegionReveal()
+        {
+            if (_fullRegionRevealCoroutine != null)
+            {
+                StopCoroutine(_fullRegionRevealCoroutine);
+                _fullRegionRevealCoroutine = null;
+            }
+            _fullRegionRevealPending = false;
+        }
+
+        private void RefreshWindowRegionIfNeeded(bool force)
+        {
+            if (!_isReady)
+            {
+                return;
+            }
+            if (_loggedWindowRegionFailure && !force)
+            {
+                return;
+            }
+
+            bool shouldClip = ShouldClipWindowToPet(
+                _sidePanelVisible,
+                _fullSurfaceOverrideVisible);
+            if (!shouldClip && _fullRegionRevealPending)
+            {
+                return;
+            }
+
+            IntPtr windowHandle = AcquirePlayerWindowHandle();
+            if (windowHandle == IntPtr.Zero)
+            {
+                LogWindowRegionFailure("the Unity player window was unavailable");
+                return;
+            }
+
+            if (!shouldClip)
+            {
+                if (_windowRegionClippedToPet)
+                {
+                    RestoreFullWindowRegion();
+                }
+                return;
+            }
+
+            NativeRect rectangle;
+            if (!GetWindowRect(windowHandle, out rectangle) ||
+                rectangle.Width <= 0 || rectangle.Height <= 0)
+            {
+                LogWindowRegionFailure(
+                    "GetWindowRect failed with error " +
+                    Marshal.GetLastWin32Error());
+                return;
+            }
+            if (!force && _windowRegionClippedToPet &&
+                _windowRegionWidth == rectangle.Width &&
+                _windowRegionHeight == rectangle.Height)
+            {
+                return;
+            }
+
+            RectInt petBounds = CalculatePetOnlyWindowRegion(
+                rectangle.Width,
+                rectangle.Height);
+            IntPtr petRegion = CreateRectRgn(
+                petBounds.xMin,
+                petBounds.yMin,
+                petBounds.xMax,
+                petBounds.yMax);
+            if (petRegion == IntPtr.Zero)
+            {
+                LogWindowRegionFailure(
+                    "CreateRectRgn failed with error " +
+                    Marshal.GetLastWin32Error());
+                return;
+            }
+
+            if (SetWindowRgn(windowHandle, petRegion, true) == 0)
+            {
+                int error = Marshal.GetLastWin32Error();
+                DeleteObject(petRegion);
+                LogWindowRegionFailure(
+                    "SetWindowRgn(pet) failed with error " + error);
+                return;
+            }
+
+            // Windows owns petRegion after a successful SetWindowRgn call.
+            bool changed = !_windowRegionClippedToPet ||
+                _windowRegionWidth != rectangle.Width ||
+                _windowRegionHeight != rectangle.Height;
+            _windowRegionClippedToPet = true;
+            _windowRegionWidth = rectangle.Width;
+            _windowRegionHeight = rectangle.Height;
+            if (changed)
+            {
+                Debug.Log(
+                    "Desktop window region: pet-only " + petBounds.width + "x" +
+                    petBounds.height + " inside " + rectangle.Width + "x" +
+                    rectangle.Height + ".");
+            }
+        }
+
+        private void RestoreFullWindowRegion()
+        {
+            if (!_windowRegionClippedToPet)
+            {
+                return;
+            }
+
+            IntPtr windowHandle = AcquirePlayerWindowHandle();
+            if (windowHandle == IntPtr.Zero ||
+                SetWindowRgn(windowHandle, IntPtr.Zero, true) == 0)
+            {
+                LogWindowRegionFailure(
+                    "SetWindowRgn(full) failed with error " +
+                    Marshal.GetLastWin32Error());
+                return;
+            }
+
+            _windowRegionClippedToPet = false;
+            _windowRegionWidth = 0;
+            _windowRegionHeight = 0;
+            Debug.Log("Desktop window region: full menu surface.");
+        }
+
+        private void LogWindowRegionFailure(string reason)
+        {
+            if (_loggedWindowRegionFailure)
+            {
+                return;
+            }
+
+            _loggedWindowRegionFailure = true;
+            Debug.LogWarning(
+                "The pet-only native window region could not be applied because " +
+                reason + ". Transparent pixels will remain click-through.");
+        }
+
+        private bool InstallNativeResizeBridge()
+        {
+            if (_resizeBridgeInstalled)
+            {
+                return true;
+            }
+
+            IntPtr windowHandle = AcquirePlayerWindowHandle();
+            if (windowHandle == IntPtr.Zero ||
+                (s_resizeWindowOwner != null &&
+                    !ReferenceEquals(s_resizeWindowOwner, this)))
+            {
+                return false;
+            }
+
+            IntPtr currentProcedure = GetWindowLongPtr(
+                windowHandle,
+                WindowLongWindowProcedure);
+            if (currentProcedure == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            s_resizeWindowOwner = this;
+            s_resizeWindowProcedure = ResizeWindowProcedureRoot;
+            _resizeWindowProcedurePointer =
+                Marshal.GetFunctionPointerForDelegate(s_resizeWindowProcedure);
+            _previousWindowProcedure = SetWindowLongPtr(
+                windowHandle,
+                WindowLongWindowProcedure,
+                _resizeWindowProcedurePointer);
+            if (_previousWindowProcedure == IntPtr.Zero)
+            {
+                ClearResizeWindowProcedureRoot();
+                return false;
+            }
+
+            _playerWindowHandle = windowHandle;
+            _resizeBridgeInstalled = true;
+            return true;
+        }
+
+        private void RemoveNativeResizeBridge()
+        {
+            if (!_resizeBridgeInstalled || _playerWindowHandle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            bool procedureIsSafeToRelease = false;
+            if (IsWindow(_playerWindowHandle))
+            {
+                IntPtr currentProcedure = GetWindowLongPtr(
+                    _playerWindowHandle,
+                    WindowLongWindowProcedure);
+                if (currentProcedure == _resizeWindowProcedurePointer)
+                {
+                    procedureIsSafeToRelease = SetWindowLongPtr(
+                        _playerWindowHandle,
+                        WindowLongWindowProcedure,
+                        _previousWindowProcedure) != IntPtr.Zero;
+                }
+                else if (currentProcedure == _previousWindowProcedure)
+                {
+                    procedureIsSafeToRelease = true;
+                }
+            }
+
+            _resizeBridgeInstalled = false;
+            _nativeSizing = false;
+            _hasNativeSizingStartRect = false;
+            if (procedureIsSafeToRelease)
+            {
+                ClearResizeWindowProcedureRoot();
+            }
+        }
+
+        private void ClearResizeWindowProcedureRoot()
+        {
+            if (ReferenceEquals(s_resizeWindowOwner, this))
+            {
+                s_resizeWindowOwner = null;
+                s_resizeWindowProcedure = null;
+            }
+            _previousWindowProcedure = IntPtr.Zero;
+            _resizeWindowProcedurePointer = IntPtr.Zero;
+        }
+
+        private static IntPtr ResizeWindowProcedureRoot(
+            IntPtr windowHandle,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam)
+        {
+            DesktopWindowController owner = s_resizeWindowOwner;
+            if (ReferenceEquals(owner, null))
+            {
+                return DefWindowProc(
+                    windowHandle,
+                    message,
+                    wParam,
+                    lParam);
+            }
+
+            try
+            {
+                return owner.HandleResizeWindowMessage(
+                    windowHandle,
+                    message,
+                    wParam,
+                    lParam);
+            }
+            catch
+            {
+                owner._resizeWindowProcedureFaulted = true;
+                return owner.CallPreviousWindowProcedure(
+                    windowHandle,
+                    message,
+                    wParam,
+                    lParam);
+            }
+        }
+
+        private IntPtr HandleResizeWindowMessage(
+            IntPtr windowHandle,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam)
+        {
+            switch (message)
+            {
+                case WindowMessageNcHitTest:
+                    int hitTest = IsInteractiveResizeEnabled
+                        ? GetResizeHitTest(windowHandle)
+                        : 0;
+                    if (hitTest != 0)
+                    {
+                        return new IntPtr(hitTest);
+                    }
+                    break;
+
+                case WindowMessageNcLeftButtonDown:
+                {
+                    int pendingEdge = SizingEdgeFromHitTest(
+                        unchecked((int)wParam.ToInt64()));
+                    if (IsInteractiveResizeEnabled &&
+                        pendingEdge != 0 && !_nativeSizing)
+                    {
+                        // Do not call DefWindowProc for our invisible resize gutter:
+                        // it starts a modal non-client sizing loop that can block
+                        // Unity before the polling fallback observes the mouse-down.
+                        if (!_managedSizing && !_managedResizeBeginPending)
+                        {
+                            _pendingManagedSizingEdge = pendingEdge;
+                            _pendingManagedSizingWindow = windowHandle;
+                            _pendingManagedSizingSnapshotValid =
+                                GetCursorPos(out _pendingManagedSizingCursor) &&
+                                GetWindowRect(
+                                    windowHandle,
+                                    out _pendingManagedSizingRect);
+                            _managedResizeBeginPending = true;
+                            _cursorInResizeGutter = true;
+                        }
+                        return IntPtr.Zero;
+                    }
+                    break;
+                }
+
+                case WindowMessageGetMinMaxInfo:
+                    ApplyMinMaxInfo(windowHandle, lParam);
+                    return IntPtr.Zero;
+
+                case WindowMessageSizing:
+                    NativeRect proposedRectangle =
+                        Marshal.PtrToStructure<NativeRect>(lParam);
+                    ConstrainSizingRectangle(
+                        windowHandle,
+                        unchecked((int)wParam.ToInt64()),
+                        ref proposedRectangle);
+                    Marshal.StructureToPtr(proposedRectangle, lParam, false);
+                    return new IntPtr(1);
+
+                case WindowMessageEnterSizeMove:
+                    _nativeSizing = true;
+                    _nativeSizingObservedSincePoll = true;
+                    _cursorInResizeGutter = true;
+                    _hasNativeSizingStartRect = GetWindowRect(
+                        windowHandle,
+                        out _nativeSizingStartRect);
+                    break;
+
+                case WindowMessageExitSizeMove:
+                    _nativeSizing = false;
+                    _hasNativeSizingStartRect = false;
+                    break;
+            }
+
+            return CallPreviousWindowProcedure(
+                windowHandle,
+                message,
+                wParam,
+                lParam);
+        }
+
+        private IntPtr CallPreviousWindowProcedure(
+            IntPtr windowHandle,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam)
+        {
+            return _previousWindowProcedure != IntPtr.Zero
+                ? CallWindowProc(
+                    _previousWindowProcedure,
+                    windowHandle,
+                    message,
+                    wParam,
+                    lParam)
+                : DefWindowProc(windowHandle, message, wParam, lParam);
+        }
+
+        private static void ApplyMinMaxInfo(
+            IntPtr windowHandle,
+            IntPtr minMaxInfoPointer)
+        {
+            if (minMaxInfoPointer == IntPtr.Zero)
+            {
+                return;
+            }
+
+            NativeRect workArea;
+            int maximumWidth;
+            int maximumHeight;
+            GetResizeLimitsForWindow(
+                windowHandle,
+                out workArea,
+                out maximumWidth,
+                out maximumHeight);
+            NativeMinMaxInfo info =
+                Marshal.PtrToStructure<NativeMinMaxInfo>(minMaxInfoPointer);
+            info.MinTrackSize.X = MinimumWindowWidth;
+            info.MinTrackSize.Y = MinimumWindowHeight;
+            info.MaxTrackSize.X = maximumWidth;
+            info.MaxTrackSize.Y = maximumHeight;
+            info.MaxSize.X = maximumWidth;
+            info.MaxSize.Y = maximumHeight;
+
+            IntPtr monitorHandle = MonitorFromWindow(
+                windowHandle,
+                MonitorDefaultToNearest);
+            NativeMonitorInfo monitorInfo = CreateMonitorInfo();
+            if (monitorHandle != IntPtr.Zero &&
+                GetMonitorInfo(monitorHandle, ref monitorInfo))
+            {
+                info.MaxPosition.X = workArea.Left - monitorInfo.Monitor.Left;
+                info.MaxPosition.Y = workArea.Top - monitorInfo.Monitor.Top;
+            }
+            Marshal.StructureToPtr(info, minMaxInfoPointer, false);
+        }
+
+        private void ConstrainSizingRectangle(
+            IntPtr windowHandle,
+            int sizingEdge,
+            ref NativeRect rectangle)
+        {
+            NativeRect workArea;
+            int maximumWidth;
+            int maximumHeight;
+            GetResizeLimitsForRectangle(
+                windowHandle,
+                ref rectangle,
+                out workArea,
+                out maximumWidth,
+                out maximumHeight);
+
+            int preferredDimension = 0;
+            if (sizingEdge == SizingLeft || sizingEdge == SizingRight)
+            {
+                preferredDimension = 1;
+            }
+            else if (sizingEdge == SizingTop || sizingEdge == SizingBottom)
+            {
+                preferredDimension = 2;
+            }
+            else if (_hasNativeSizingStartRect)
+            {
+                double widthScaleChange = Math.Abs(
+                    rectangle.Width - _nativeSizingStartRect.Width) /
+                    (double)WindowAspectWidth;
+                double heightScaleChange = Math.Abs(
+                    rectangle.Height - _nativeSizingStartRect.Height) /
+                    (double)WindowAspectHeight;
+                preferredDimension = widthScaleChange >= heightScaleChange ? 1 : 2;
+            }
+
+            int width;
+            int height;
+            ConstrainClientSizeCore(
+                rectangle.Width,
+                rectangle.Height,
+                preferredDimension,
+                maximumWidth,
+                maximumHeight,
+                out width,
+                out height);
+
+            switch (sizingEdge)
+            {
+                case SizingLeft:
+                    rectangle.Left = rectangle.Right - width;
+                    rectangle.Bottom = rectangle.Top + height;
+                    break;
+                case SizingRight:
+                    rectangle.Right = rectangle.Left + width;
+                    rectangle.Bottom = rectangle.Top + height;
+                    break;
+                case SizingTop:
+                    rectangle.Top = rectangle.Bottom - height;
+                    rectangle.Right = rectangle.Left + width;
+                    break;
+                case SizingBottom:
+                    rectangle.Bottom = rectangle.Top + height;
+                    rectangle.Right = rectangle.Left + width;
+                    break;
+                case SizingTopLeft:
+                    rectangle.Left = rectangle.Right - width;
+                    rectangle.Top = rectangle.Bottom - height;
+                    break;
+                case SizingTopRight:
+                    rectangle.Right = rectangle.Left + width;
+                    rectangle.Top = rectangle.Bottom - height;
+                    break;
+                case SizingBottomLeft:
+                    rectangle.Left = rectangle.Right - width;
+                    rectangle.Bottom = rectangle.Top + height;
+                    break;
+                default:
+                    rectangle.Right = rectangle.Left + width;
+                    rectangle.Bottom = rectangle.Top + height;
+                    break;
+            }
+            ClampRectangleToWorkArea(ref rectangle, workArea);
+        }
+
+        private static int GetResizeHitTest(IntPtr windowHandle)
+        {
+            NativePoint cursor;
+            NativeRect rectangle;
+            if (!GetCursorPos(out cursor) ||
+                !GetWindowRect(windowHandle, out rectangle))
+            {
+                return 0;
+            }
+
+            int gutter = GetResizeGutterPixels(windowHandle);
+            bool left = cursor.X >= rectangle.Left &&
+                cursor.X < rectangle.Left + gutter;
+            bool right = cursor.X < rectangle.Right &&
+                cursor.X >= rectangle.Right - gutter;
+            bool top = cursor.Y >= rectangle.Top &&
+                cursor.Y < rectangle.Top + gutter;
+            bool bottom = cursor.Y < rectangle.Bottom &&
+                cursor.Y >= rectangle.Bottom - gutter;
+            if (top && left) return HitTestTopLeft;
+            if (top && right) return HitTestTopRight;
+            if (bottom && left) return HitTestBottomLeft;
+            if (bottom && right) return HitTestBottomRight;
+            if (left) return HitTestLeft;
+            if (right) return HitTestRight;
+            if (top) return HitTestTop;
+            if (bottom) return HitTestBottom;
+            return 0;
+        }
+
+        private void UpdateManagedResizeFallback()
+        {
+            bool leftMouseDown =
+                (GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0;
+
+            if (!IsInteractiveResizeEnabled &&
+                !_nativeSizing && !_managedSizing)
+            {
+                ClearPendingManagedResizeBegin();
+                _managedResizeInputSuppressedUntilRelease = false;
+                _leftMouseWasDown = leftMouseDown;
+                return;
+            }
+
+            // A real Windows modal sizing loop always owns the gesture. The flag is
+            // latched in WndProc because ENTER/EXIT can both occur before Unity gets
+            // another Update when the modal loop blocks the player thread.
+            if (_nativeSizingObservedSincePoll || _nativeSizing)
+            {
+                _nativeSizingObservedSincePoll = false;
+                ClearPendingManagedResizeBegin();
+                if (_managedSizing)
+                {
+                    EndManagedResizeFallback(leftMouseDown);
+                }
+                if (leftMouseDown)
+                {
+                    _managedResizeInputSuppressedUntilRelease = true;
+                }
+                _leftMouseWasDown = leftMouseDown;
+                return;
+            }
+
+            if (_managedResizeInputSuppressedUntilRelease)
+            {
+                ClearPendingManagedResizeBegin();
+                if (!leftMouseDown)
+                {
+                    _managedResizeInputSuppressedUntilRelease = false;
+                }
+                _leftMouseWasDown = leftMouseDown;
+                return;
+            }
+
+            if (_managedResizeBeginPending)
+            {
+                if (leftMouseDown)
+                {
+                    TryBeginPendingManagedResizeFallback();
+                }
+                else
+                {
+                    ClearPendingManagedResizeBegin();
+                }
+            }
+
+            if (_managedSizing)
+            {
+                if (leftMouseDown)
+                {
+                    ContinueManagedResizeFallback();
+                }
+                else
+                {
+                    EndManagedResizeFallback(false);
+                }
+            }
+            else if (leftMouseDown && !_leftMouseWasDown)
+            {
+                TryBeginManagedResizeFallback();
+            }
+
+            _leftMouseWasDown = leftMouseDown;
+        }
+
+        private bool TryBeginManagedResizeFallback()
+        {
+            if (!IsInteractiveResizeEnabled ||
+                _nativeSizing || _managedSizing)
+            {
+                return false;
+            }
+
+            IntPtr windowHandle = AcquirePlayerWindowHandle();
+            if (windowHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            int sizingEdge = SizingEdgeFromHitTest(
+                GetResizeHitTest(windowHandle));
+            NativePoint cursor;
+            NativeRect rectangle;
+            if (sizingEdge == 0 ||
+                !GetCursorPos(out cursor) ||
+                !GetWindowRect(windowHandle, out rectangle))
+            {
+                return false;
+            }
+
+            return BeginManagedResizeFallback(
+                windowHandle,
+                sizingEdge,
+                cursor,
+                rectangle);
+        }
+
+        private bool TryBeginPendingManagedResizeFallback()
+        {
+            if (!_managedResizeBeginPending)
+            {
+                return false;
+            }
+
+            IntPtr windowHandle = _pendingManagedSizingWindow;
+            int sizingEdge = _pendingManagedSizingEdge;
+            NativePoint cursor = _pendingManagedSizingCursor;
+            NativeRect rectangle = _pendingManagedSizingRect;
+            bool snapshotValid = _pendingManagedSizingSnapshotValid;
+            ClearPendingManagedResizeBegin();
+            if (!snapshotValid &&
+                (!GetCursorPos(out cursor) ||
+                    !GetWindowRect(windowHandle, out rectangle)))
+            {
+                return false;
+            }
+
+            return BeginManagedResizeFallback(
+                windowHandle,
+                sizingEdge,
+                cursor,
+                rectangle);
+        }
+
+        private bool BeginManagedResizeFallback(
+            IntPtr windowHandle,
+            int sizingEdge,
+            NativePoint cursor,
+            NativeRect rectangle)
+        {
+            if (!IsInteractiveResizeEnabled ||
+                _nativeSizing || _managedSizing || sizingEdge == 0 ||
+                !IsWindow(windowHandle))
+            {
+                return false;
+            }
+
+            if (_isDragging)
+            {
+                EndDrag();
+            }
+            _playerWindowHandle = windowHandle;
+            _managedSizingEdge = sizingEdge;
+            _managedSizingStartCursor = cursor;
+            _managedSizingStartRect = rectangle;
+            _nativeSizingStartRect = rectangle;
+            _hasNativeSizingStartRect = true;
+            _managedResizeApplied = false;
+            _managedSizing = true;
+            return true;
+        }
+
+        private void ClearPendingManagedResizeBegin()
+        {
+            _managedResizeBeginPending = false;
+            _pendingManagedSizingEdge = 0;
+            _pendingManagedSizingWindow = IntPtr.Zero;
+            _pendingManagedSizingSnapshotValid = false;
+        }
+
+        private void ContinueManagedResizeFallback()
+        {
+            if (!_managedSizing || _nativeSizing)
+            {
+                return;
+            }
+
+            NativePoint cursor;
+            if (!IsWindow(_playerWindowHandle) || !GetCursorPos(out cursor))
+            {
+                EndManagedResizeFallback(true);
+                return;
+            }
+
+            int deltaX = cursor.X - _managedSizingStartCursor.X;
+            int deltaY = cursor.Y - _managedSizingStartCursor.Y;
+            NativeRect proposedRectangle = _managedSizingStartRect;
+            switch (_managedSizingEdge)
+            {
+                case SizingLeft:
+                    proposedRectangle.Left += deltaX;
+                    break;
+                case SizingRight:
+                    proposedRectangle.Right += deltaX;
+                    break;
+                case SizingTop:
+                    proposedRectangle.Top += deltaY;
+                    break;
+                case SizingTopLeft:
+                    proposedRectangle.Top += deltaY;
+                    proposedRectangle.Left += deltaX;
+                    break;
+                case SizingTopRight:
+                    proposedRectangle.Top += deltaY;
+                    proposedRectangle.Right += deltaX;
+                    break;
+                case SizingBottom:
+                    proposedRectangle.Bottom += deltaY;
+                    break;
+                case SizingBottomLeft:
+                    proposedRectangle.Bottom += deltaY;
+                    proposedRectangle.Left += deltaX;
+                    break;
+                case SizingBottomRight:
+                    proposedRectangle.Bottom += deltaY;
+                    proposedRectangle.Right += deltaX;
+                    break;
+                default:
+                    EndManagedResizeFallback(true);
+                    return;
+            }
+
+            ConstrainSizingRectangle(
+                _playerWindowHandle,
+                _managedSizingEdge,
+                ref proposedRectangle);
+            const SetWindowPosFlags Flags =
+                SetWindowPosFlags.NoZOrder |
+                SetWindowPosFlags.NoActivate |
+                SetWindowPosFlags.NoOwnerZOrder;
+            if (!SetWindowPos(
+                _playerWindowHandle,
+                IntPtr.Zero,
+                proposedRectangle.Left,
+                proposedRectangle.Top,
+                proposedRectangle.Width,
+                proposedRectangle.Height,
+                Flags))
+            {
+                EndManagedResizeFallback(true);
+                return;
+            }
+
+            if (proposedRectangle.Width != _managedSizingStartRect.Width ||
+                proposedRectangle.Height != _managedSizingStartRect.Height)
+            {
+                _managedResizeApplied = true;
+            }
+        }
+
+        private void EndManagedResizeFallback(bool suppressUntilRelease)
+        {
+            ClearPendingManagedResizeBegin();
+            bool wasSizing = _managedSizing;
+            NativeRect startingRectangle = _managedSizingStartRect;
+            bool appliedResize = _managedResizeApplied;
+            _managedSizing = false;
+            _managedSizingEdge = 0;
+            _managedResizeApplied = false;
+            if (!_nativeSizing)
+            {
+                _hasNativeSizingStartRect = false;
+            }
+            if (suppressUntilRelease)
+            {
+                _managedResizeInputSuppressedUntilRelease = true;
+            }
+
+            if (!wasSizing || !appliedResize ||
+                _managedResizeCompletionLogged ||
+                !IsWindow(_playerWindowHandle))
+            {
+                return;
+            }
+
+            NativeRect completedRectangle;
+            if (GetWindowRect(_playerWindowHandle, out completedRectangle) &&
+                (completedRectangle.Width != startingRectangle.Width ||
+                    completedRectangle.Height != startingRectangle.Height))
+            {
+                _managedResizeCompletionLogged = true;
+                Debug.Log(
+                    "Managed window resize complete: " +
+                    startingRectangle.Width + "x" + startingRectangle.Height +
+                    " -> " + completedRectangle.Width + "x" +
+                    completedRectangle.Height + ".");
+            }
+        }
+
+        private static int SizingEdgeFromHitTest(int hitTest)
+        {
+            switch (hitTest)
+            {
+                case HitTestLeft: return SizingLeft;
+                case HitTestRight: return SizingRight;
+                case HitTestTop: return SizingTop;
+                case HitTestTopLeft: return SizingTopLeft;
+                case HitTestTopRight: return SizingTopRight;
+                case HitTestBottom: return SizingBottom;
+                case HitTestBottomLeft: return SizingBottomLeft;
+                case HitTestBottomRight: return SizingBottomRight;
+                default: return 0;
+            }
+        }
+
+        private bool IsCursorInResizeGutter()
+        {
+            if (!IsInteractiveResizeEnabled)
+            {
+                return false;
+            }
+            IntPtr windowHandle = AcquirePlayerWindowHandle();
+            return windowHandle != IntPtr.Zero &&
+                GetResizeHitTest(windowHandle) != 0;
+        }
+
+        private static int GetResizeGutterPixels(IntPtr windowHandle)
+        {
+            uint dpi = DefaultDpi;
+            try
+            {
+                uint windowDpi = GetDpiForWindow(windowHandle);
+                if (windowDpi > 0)
+                {
+                    dpi = windowDpi;
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+                dpi = DefaultDpi;
+            }
+            return Math.Max(
+                4,
+                (int)Math.Round(
+                    ResizeGutterDips * dpi / (double)DefaultDpi,
+                    MidpointRounding.AwayFromZero));
+        }
+
+        private void UpdateResizeHitTestOverride()
+        {
+            bool shouldOverride =
+                _nativeSizing || _managedSizing || IsCursorInResizeGutter();
+            _cursorInResizeGutter = shouldOverride;
+            if (shouldOverride && _isDragging)
+            {
+                EndDrag();
+            }
+
+            if (shouldOverride && !_resizeHitTestOverrideActive)
+            {
+                _resizeHitTestWasEnabled = _nativeWindow.isHitTestEnabled;
+                _resizeClickThroughWasEnabled = _nativeWindow.isClickThrough;
+                _nativeWindow.isHitTestEnabled = false;
+                _nativeWindow.isClickThrough = false;
+                _resizeHitTestOverrideActive = true;
+            }
+            else if (!shouldOverride)
+            {
+                ReleaseResizeHitTestOverride();
+            }
+        }
+
+        private void ReleaseResizeHitTestOverride()
+        {
+            if (!_resizeHitTestOverrideActive)
+            {
+                return;
+            }
+            if (_nativeWindow != null)
+            {
+                _nativeWindow.isHitTestEnabled = _resizeHitTestWasEnabled;
+                _nativeWindow.isClickThrough = _resizeClickThroughWasEnabled;
+            }
+            _resizeHitTestOverrideActive = false;
+            _cursorInResizeGutter = false;
+        }
+
+        private static void GetResizeLimitsForWindow(
+            IntPtr windowHandle,
+            out NativeRect workArea,
+            out int maximumWidth,
+            out int maximumHeight)
+        {
+            IntPtr monitorHandle = MonitorFromWindow(
+                windowHandle,
+                MonitorDefaultToNearest);
+            if (!TryGetMonitorWorkArea(monitorHandle, out workArea))
+            {
+                SystemParametersInfo(
+                    SystemParametersInfoGetWorkArea,
+                    0,
+                    out workArea,
+                    0);
+            }
+            CalculateMaximumSize(workArea, out maximumWidth, out maximumHeight);
+        }
+
+        private static void GetResizeLimitsForRectangle(
+            IntPtr windowHandle,
+            ref NativeRect rectangle,
+            out NativeRect workArea,
+            out int maximumWidth,
+            out int maximumHeight)
+        {
+            IntPtr monitorHandle = MonitorFromRect(
+                ref rectangle,
+                MonitorDefaultToNearest);
+            if (!TryGetMonitorWorkArea(monitorHandle, out workArea))
+            {
+                GetResizeLimitsForWindow(
+                    windowHandle,
+                    out workArea,
+                    out maximumWidth,
+                    out maximumHeight);
+                return;
+            }
+            CalculateMaximumSize(workArea, out maximumWidth, out maximumHeight);
+        }
+
+        private static bool TryGetMonitorWorkArea(
+            IntPtr monitorHandle,
+            out NativeRect workArea)
+        {
+            NativeMonitorInfo monitorInfo = CreateMonitorInfo();
+            if (monitorHandle != IntPtr.Zero &&
+                GetMonitorInfo(monitorHandle, ref monitorInfo) &&
+                monitorInfo.Work.Width > 0 && monitorInfo.Work.Height > 0)
+            {
+                workArea = monitorInfo.Work;
+                return true;
+            }
+            workArea = default(NativeRect);
+            return false;
+        }
+
+        private static NativeMonitorInfo CreateMonitorInfo()
+        {
+            return new NativeMonitorInfo
+            {
+                Size = Marshal.SizeOf(typeof(NativeMonitorInfo))
+            };
+        }
+
+        private static void CalculateMaximumSize(
+            NativeRect workArea,
+            out int maximumWidth,
+            out int maximumHeight)
+        {
+            int maximumScale = Math.Min(
+                MaximumWindowWidth / WindowAspectWidth,
+                MaximumWindowHeight / WindowAspectHeight);
+            if (workArea.Width > 0 && workArea.Height > 0)
+            {
+                maximumScale = Math.Min(
+                    maximumScale,
+                    Math.Min(
+                        workArea.Width / WindowAspectWidth,
+                        workArea.Height / WindowAspectHeight));
+            }
+            maximumScale = Math.Max(
+                MinimumWindowWidth / WindowAspectWidth,
+                maximumScale);
+            maximumWidth = maximumScale * WindowAspectWidth;
+            maximumHeight = maximumScale * WindowAspectHeight;
+        }
+
+        private static void ClampRectangleToWorkArea(
+            ref NativeRect rectangle,
+            NativeRect workArea)
+        {
+            if (workArea.Width <= 0 || workArea.Height <= 0)
+            {
+                return;
+            }
+            int horizontalShift = rectangle.Left < workArea.Left
+                ? workArea.Left - rectangle.Left
+                : rectangle.Right > workArea.Right
+                    ? workArea.Right - rectangle.Right
+                    : 0;
+            int verticalShift = rectangle.Top < workArea.Top
+                ? workArea.Top - rectangle.Top
+                : rectangle.Bottom > workArea.Bottom
+                    ? workArea.Bottom - rectangle.Bottom
+                    : 0;
+            rectangle.Left += horizontalShift;
+            rectangle.Right += horizontalShift;
+            rectangle.Top += verticalShift;
+            rectangle.Bottom += verticalShift;
+        }
+
         private void BeginSidePanelOpenTransition(int panelWidth)
         {
             _sidePanelCameraManaged = true;
@@ -786,6 +2341,26 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 return _playerWindowHandle;
             }
+
+            // UniWindow already owns the authoritative HWND and exports it from
+            // LibUniWinC even though its managed wrapper keeps that API internal.
+            try
+            {
+                IntPtr pluginWindow = GetWindowHandle();
+                if (IsWindowForProcess(pluginWindow, processId))
+                {
+                    _playerWindowHandle = pluginWindow;
+                    return _playerWindowHandle;
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Preserve compatibility with older UniWindow binaries.
+            }
+            catch (DllNotFoundException)
+            {
+                // The normal process-window fallbacks below remain available.
+            }
             if (IsWindowForProcess(mainWindow, processId))
             {
                 _playerWindowHandle = mainWindow;
@@ -934,6 +2509,54 @@ namespace UmaDesktopPet.Standalone.Runtime
                 workBottom + screenEdgePadding);
         }
 #endif
+
+        private static void ConstrainClientSizeCore(
+            int requestedWidth,
+            int requestedHeight,
+            int preferredDimension,
+            int maximumWidth,
+            int maximumHeight,
+            out int constrainedWidth,
+            out int constrainedHeight)
+        {
+            double requestedScale;
+            if (preferredDimension == 1)
+            {
+                requestedScale = Math.Max(1, requestedWidth) /
+                    (double)WindowAspectWidth;
+            }
+            else if (preferredDimension == 2)
+            {
+                requestedScale = Math.Max(1, requestedHeight) /
+                    (double)WindowAspectHeight;
+            }
+            else
+            {
+                // Orthogonal projection onto width=3s,height=2s gives the
+                // closest exact-aspect integer pair to an arbitrary request.
+                requestedScale =
+                    (WindowAspectWidth * (double)Math.Max(1, requestedWidth) +
+                        WindowAspectHeight * (double)Math.Max(1, requestedHeight)) /
+                    (WindowAspectWidth * WindowAspectWidth +
+                        WindowAspectHeight * WindowAspectHeight);
+            }
+
+            int minimumScale = Math.Max(
+                MinimumWindowWidth / WindowAspectWidth,
+                MinimumWindowHeight / WindowAspectHeight);
+            int maximumScale = Math.Min(
+                Math.Max(MinimumWindowWidth, maximumWidth) / WindowAspectWidth,
+                Math.Max(MinimumWindowHeight, maximumHeight) / WindowAspectHeight);
+            maximumScale = Math.Max(minimumScale, maximumScale);
+            int constrainedScale = (int)Math.Round(
+                requestedScale,
+                MidpointRounding.AwayFromZero);
+            constrainedScale = Math.Max(
+                minimumScale,
+                Math.Min(maximumScale, constrainedScale));
+            constrainedWidth = constrainedScale * WindowAspectWidth;
+            constrainedHeight = constrainedScale * WindowAspectHeight;
+        }
 
         private void RaiseDragStateChanged(bool dragging)
         {

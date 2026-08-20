@@ -14,6 +14,11 @@ namespace UmaDesktopPet.Standalone.Editor
             GameCompatibilityProbeSmokeTests.Run();
             DesktopPetPreferencesSmokeTests.Run();
             PetNeedsStateSmokeTests.Run();
+            PetFocusStateSmokeTests.Run();
+            PetStudyRewardServiceSmokeTests.Run();
+            PetRecordingModeSmokeTests.Run();
+            PetAttachmentRigSmokeTests.Run();
+            DesktopWindowResizeSmokeTests.Run();
             Debug.Log("All standalone desktop-pet smoke tests passed.");
         }
     }

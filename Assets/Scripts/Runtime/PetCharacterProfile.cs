@@ -1,8 +1,33 @@
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace UmaDesktopPet.Standalone.Runtime
 {
+    /// <summary>
+    /// App-owned presentation tokens for one supported character. Game art is
+    /// never stored here; this only keeps the side panel from branching on IDs.
+    /// </summary>
+    public sealed class PetCharacterTheme
+    {
+        internal PetCharacterTheme(
+            Color accent,
+            Color accentSoft,
+            Color primary,
+            Color primaryHover)
+        {
+            Accent = accent;
+            AccentSoft = accentSoft;
+            Primary = primary;
+            PrimaryHover = primaryHover;
+        }
+
+        public Color Accent { get; private set; }
+        public Color AccentSoft { get; private set; }
+        public Color Primary { get; private set; }
+        public Color PrimaryHover { get; private set; }
+    }
+
     /// <summary>
     /// App-owned identity for one explicitly supported desktop-pet character.
     /// Game assets remain in the user's installation and are not stored here.
@@ -13,7 +38,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             string key,
             int gameCharacterId,
             string displayName,
-            string shortName)
+            string shortName,
+            PetCharacterTheme theme)
         {
             if (string.IsNullOrWhiteSpace(key))
             {
@@ -37,11 +63,16 @@ namespace UmaDesktopPet.Standalone.Runtime
                     "A character short name is required.",
                     "shortName");
             }
+            if (theme == null)
+            {
+                throw new ArgumentNullException("theme");
+            }
 
             Key = key;
             GameCharacterId = gameCharacterId;
             DisplayName = displayName;
             ShortName = shortName;
+            Theme = theme;
         }
 
         public string Key { get; private set; }
@@ -51,6 +82,8 @@ namespace UmaDesktopPet.Standalone.Runtime
         public string DisplayName { get; private set; }
 
         public string ShortName { get; private set; }
+
+        public PetCharacterTheme Theme { get; private set; }
     }
 
     /// <summary>
@@ -60,7 +93,16 @@ namespace UmaDesktopPet.Standalone.Runtime
     public static class PetCharacterCatalog
     {
         public static readonly PetCharacterProfile Oguri =
-            new PetCharacterProfile("oguri-cap", 1006, "Oguri Cap", "Oguri");
+            new PetCharacterProfile(
+                "oguri-cap",
+                1006,
+                "Oguri Cap",
+                "Oguri",
+                new PetCharacterTheme(
+                    new Color(0.97f, 0.75f, 0.18f, 1.0f),
+                    new Color(1.0f, 0.96f, 0.80f, 1.0f),
+                    new Color(0.25f, 0.63f, 0.31f, 1.0f),
+                    new Color(0.31f, 0.72f, 0.37f, 1.0f)));
 
         private static readonly PetCharacterProfile[] SelectableProfiles =
         {

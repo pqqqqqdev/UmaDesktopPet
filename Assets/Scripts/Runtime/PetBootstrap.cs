@@ -20,11 +20,18 @@ namespace UmaDesktopPet.Standalone.Runtime
         private GameDataCatalog _catalog;
         private BundleRepository _bundles;
         private InstalledCareUiAssets _careUiAssets;
+        private InstalledShopUiAssets _shopUiAssets;
+        private InstalledFoodUiAssets _foodUiAssets;
         private MiniCharacterInstance _character;
+        private PetAttachmentRig _attachmentRig;
         private DesktopWindowController _windowController;
         private OguriPetAnimationController _animationController;
+        private StudyDeskPresenter _studyDeskPresenter;
+        private PetStudyController _studyController;
         private PetInteractionController _interactionController;
         private PetNeedsState _needsState;
+        private PetFocusState _focusState;
+        private PetStudyRewardService _studyRewardService;
         private PetAutonomyController _autonomyController;
         private GameInstallPreferences _installPreferences;
         private DesktopPetPreferences _petPreferences;
@@ -39,6 +46,20 @@ namespace UmaDesktopPet.Standalone.Runtime
         private string _status = "Reading the installed game data...";
         private string _failure;
         private float _hideStatusAt = float.PositiveInfinity;
+        private int _cameraViewportScreenWidth = -1;
+        private int _cameraViewportScreenHeight = -1;
+
+        private static bool IsRecordingToolsBuild
+        {
+            get
+            {
+#if UMA_RECORDING_TOOLS
+                return true;
+#else
+                return false;
+#endif
+            }
+        }
 
         private IEnumerator Start()
         {
@@ -142,8 +163,10 @@ namespace UmaDesktopPet.Standalone.Runtime
             if (string.IsNullOrEmpty(_failure))
             {
                 yield return WaitForDesktopWindow();
+                yield return ApplySmokeWindowScaleIfRequested();
                 bool showWelcome = _showFirstRunHint &&
-                    !HasSmokeCommandLineArgument();
+                    !HasSmokeCommandLineArgument() &&
+                    !IsRecordingToolsBuild;
                 if (showWelcome)
                 {
                     _status = "Oguri is here. Click her, hold to pat, drag " +
@@ -169,6 +192,18 @@ namespace UmaDesktopPet.Standalone.Runtime
                         Debug.LogWarning(preferenceError);
                     }
                 }
+#if UMA_RECORDING_TOOLS
+                if (_interactionController != null)
+                {
+                    _interactionController.OpenRecordingTools();
+                    Debug.Log(
+                        "Recording tools opened with temporary state" +
+                        (IsRecordingToolsRequested()
+                            ? " from the recording launcher; "
+                            : "; ") +
+                        "normal care and focus saves are untouched.");
+                }
+#endif
                 if (SmokeMenuBurstCapture.IsRequested)
                 {
                     yield return SmokeMenuBurstCapture.CaptureIfRequested(
@@ -179,6 +214,14 @@ namespace UmaDesktopPet.Standalone.Runtime
                 yield return TriggerSmokeActionIfRequested();
                 bool smokeCarrotEating =
                     HasCommandLineArgument("--smoke-carrot-eating");
+                string smokeStudyItemId =
+                    ReadCommandLineValue("--smoke-study-item");
+                string smokeMoodName =
+                    ReadCommandLineValue("--smoke-mood");
+                bool smokeStudyIdle =
+                    HasCommandLineArgument("--smoke-study-idle");
+                bool smokeStudyReady =
+                    HasCommandLineArgument("--smoke-study-ready");
                 if ((smokeCarrotEating ||
                     HasCommandLineArgument("--smoke-carrot")) &&
                     _interactionController != null)
@@ -208,6 +251,147 @@ namespace UmaDesktopPet.Standalone.Runtime
                         ", root=" + _catalog.GameRoot +
                         ", character=" + _selectedCharacter.Key +
                         ", selectable=" + PetCharacterCatalog.Selectable.Count + ".");
+                }
+                else if ((HasCommandLineArgument("--smoke-study") ||
+                    smokeStudyIdle ||
+                    smokeStudyReady ||
+                    HasCommandLineArgument("--smoke-study-charm") ||
+                    HasCommandLineArgument("--smoke-study-paused") ||
+                    !string.IsNullOrWhiteSpace(smokeStudyItemId)) &&
+                    _interactionController != null && _focusState != null)
+                {
+                    _focusState.ResetForSmokeTest();
+                    if (HasCommandLineArgument("--smoke-study-charm"))
+                    {
+                        PrepareDeskItemForSmokeTest(
+                            DeskShopCatalog.CarrotCharmId);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(smokeStudyItemId))
+                    {
+                        PrepareDeskItemForSmokeTest(smokeStudyItemId);
+                    }
+                    if (!smokeStudyIdle)
+                    {
+                        _focusState.StartSession(
+                            PetFocusState.ShortSessionSeconds);
+                    }
+                    if (smokeStudyReady)
+                    {
+                        _focusState.AdvanceTime(
+                            PetFocusState.ShortSessionSeconds);
+                    }
+                    if (!string.IsNullOrWhiteSpace(smokeStudyItemId) &&
+                        (_studyDeskPresenter == null ||
+                         !_studyDeskPresenter.CanPresentDeskItem(smokeStudyItemId) ||
+                         !string.Equals(
+                             _studyDeskPresenter.EquippedDeskItemId,
+                             smokeStudyItemId,
+                             StringComparison.Ordinal)))
+                    {
+                        throw new InvalidDataException(
+                            "Desk item smoke did not equip: " +
+                            smokeStudyItemId + ".");
+                    }
+                    float studyTimeout = Time.realtimeSinceStartup + 5.0f;
+                    while (!smokeStudyIdle && !smokeStudyReady &&
+                        _animationController != null &&
+                        _animationController.HasStudyMotion &&
+                        !_animationController.IsStudying &&
+                        Time.realtimeSinceStartup < studyTimeout)
+                    {
+                        yield return null;
+                    }
+                    if (HasCommandLineArgument("--smoke-study-paused"))
+                    {
+                        _focusState.PauseSession();
+                    }
+                    if (HasCommandLineArgument("--smoke-home"))
+                    {
+                        _interactionController.OpenMenuForSmokeTest();
+                    }
+                    else
+                    {
+                        _interactionController.OpenStudyForSmokeTest();
+                    }
+                    Debug.Log(
+                        "Study smoke: status=" + _focusState.Status +
+                        ", motion=" + _animationController.CurrentPhase +
+                        ", desk=" +
+                        (_studyDeskPresenter != null &&
+                         _studyDeskPresenter.IsVisible) +
+                        ", installedProps=" +
+                        (_studyDeskPresenter != null &&
+                         _studyDeskPresenter.UsesInstalledStudyProps) +
+                        ", equipped=" + _focusState.EquippedDeskItemId + ".");
+                }
+                else if (HasCommandLineArgument("--smoke-inventory") &&
+                    _interactionController != null && _focusState != null)
+                {
+                    _focusState.ResetForSmokeTest();
+                    PrepareDeskItemForSmokeTest(DeskShopCatalog.CarrotCharmId);
+                    PrepareDeskItemForSmokeTest(DeskShopCatalog.TazunaRedPenId);
+                    _interactionController.OpenInventoryForSmokeTest();
+                    Debug.Log(
+                        "Inventory smoke: Moni=" + _focusState.Moni +
+                        ", owned=" + _focusState.OwnedDeskItemCount +
+                        ", equipped=" + _focusState.EquippedDeskItemId + ".");
+                }
+                else if (HasCommandLineArgument("--smoke-shop") &&
+                    _interactionController != null && _focusState != null)
+                {
+                    _focusState.ResetForSmokeTest();
+                    _focusState.StartSession(PetFocusState.ShortSessionSeconds);
+                    _focusState.AdvanceTime(PetFocusState.ShortSessionSeconds);
+                    _studyRewardService.TryCollectReward();
+                    _focusState.PurchaseDeskItem(DeskShopCatalog.CarrotCharmId);
+                    _focusState.StartSession(PetFocusState.LongSessionSeconds);
+                    _focusState.AdvanceTime(PetFocusState.LongSessionSeconds);
+                    _studyRewardService.TryCollectReward();
+                    _interactionController.OpenShopForSmokeTest();
+                    Debug.Log(
+                        "Shop smoke: Moni=" + _focusState.Moni +
+                        ", owned=" + _focusState.OwnedDeskItemCount +
+                        ", equipped=" + _focusState.EquippedDeskItemId + ".");
+                }
+                else if (!string.IsNullOrWhiteSpace(smokeMoodName) &&
+                    _interactionController != null && _needsState != null)
+                {
+                    PetMood smokeMood;
+                    if (!Enum.TryParse(smokeMoodName, true, out smokeMood) ||
+                        (int)smokeMood < (int)PetMood.Awful ||
+                        (int)smokeMood > (int)PetMood.Great)
+                    {
+                        throw new InvalidDataException(
+                            "--smoke-mood must be Awful, Bad, Normal, Good, " +
+                            "or Great.");
+                    }
+                    _needsState.ResetForSmokeTest();
+                    _needsState.SetMoodForSmokeTest(smokeMood);
+                    _interactionController.OpenMenuForSmokeTest();
+                    Debug.Log("Mood state smoke: " + smokeMood + ".");
+                }
+                else if (HasCommandLineArgument("--smoke-mood-pulse") &&
+                    _interactionController != null && _needsState != null)
+                {
+                    _needsState.ResetForSmokeTest();
+                    _interactionController.OpenMenuForSmokeTest();
+                    yield return null;
+                    yield return new WaitForEndOfFrame();
+                    PetMood previousMood = _needsState.Mood;
+                    if (!_needsState.TryPat())
+                    {
+                        throw new InvalidOperationException(
+                            "Mood pulse smoke could not change Mood.");
+                    }
+                    Debug.Log(
+                        "Mood pulse smoke: before=" + previousMood +
+                        ", after=" + _needsState.Mood + ".");
+                }
+                else if (HasCommandLineArgument("--smoke-home") &&
+                    _interactionController != null && _focusState != null)
+                {
+                    _focusState.ResetForSmokeTest();
+                    _interactionController.OpenMenuForSmokeTest();
                 }
                 else if (HasCommandLineArgument("--smoke-menu") &&
                     _interactionController != null)
@@ -249,6 +433,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             ConfigureRenderPipeline(_catalog.Region);
             _bundles = new BundleRepository(_catalog);
             _careUiAssets = InstalledCareUiAssets.TryLoad(_bundles);
+            _shopUiAssets = InstalledShopUiAssets.TryLoad(_bundles);
+            _foodUiAssets = InstalledFoodUiAssets.TryLoad(_bundles);
 
             var assembler = new MiniCharacterAssembler(_catalog, _bundles);
             _character = assembler.AssembleOguri(transform);
@@ -268,12 +454,51 @@ namespace UmaDesktopPet.Standalone.Runtime
                 diagnosticDragAsset,
                 diagnosticDragTime);
 
+            PetAttachmentProfile attachmentProfile;
+            if (!PetAttachmentProfileCatalog.TryGet(
+                _selectedCharacter.Key,
+                out attachmentProfile))
+            {
+                throw new NotSupportedException(
+                    _selectedCharacter.DisplayName +
+                    " does not have an attachment profile.");
+            }
+            _attachmentRig =
+                _character.gameObject.AddComponent<PetAttachmentRig>();
+            _attachmentRig.Initialize(
+                _character.transform,
+                visualFrame.transform,
+                attachmentProfile);
+            _character.SetAttachmentRig(_attachmentRig);
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+            Transform leftHandSlot;
+            Transform rightHandSlot;
+            Transform mouthSlot;
+            Debug.Log(
+                "Pet attachment slots: leftHand=" +
+                _attachmentRig.TryGetSlot(
+                    PetAttachmentSlots.LeftHand,
+                    out leftHandSlot) +
+                ", rightHand=" +
+                _attachmentRig.TryGetSlot(
+                    PetAttachmentSlots.RightHand,
+                    out rightHandSlot) +
+                ", mouth=" +
+                _attachmentRig.TryGetSlot(
+                    PetAttachmentSlots.Mouth,
+                    out mouthSlot));
+#endif
+
+            _studyDeskPresenter =
+                _character.gameObject.AddComponent<StudyDeskPresenter>();
+            _studyDeskPresenter.Initialize(_attachmentRig, _bundles);
+
             PetCameraFramingController framing =
                 gameObject.AddComponent<PetCameraFramingController>();
             framing.Initialize(
                 _camera,
                 visualFrame.transform,
-                _character.gameObject,
+                visualFrame,
                 _animationController);
 
             string diagnosticFace = ReadCommandLineValue("--smoke-face");
@@ -289,10 +514,23 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             _needsState = gameObject.AddComponent<PetNeedsState>();
-            if (HasCommandLineArgument("--smoke-reset-needs"))
+            if (HasSmokeCommandLineArgument())
             {
-                _needsState.ResetNeeds();
+                _needsState.ResetForSmokeTest();
             }
+            _focusState = gameObject.AddComponent<PetFocusState>();
+            if (HasSmokeCommandLineArgument())
+            {
+                _focusState.ResetForSmokeTest();
+            }
+            _studyRewardService = new PetStudyRewardService(
+                _focusState,
+                _needsState);
+            _studyController = gameObject.AddComponent<PetStudyController>();
+            _studyController.Initialize(
+                _focusState,
+                _animationController,
+                _studyDeskPresenter);
             _windowController.SetRenderCamera(_camera);
 
             _interactionController =
@@ -301,22 +539,32 @@ namespace UmaDesktopPet.Standalone.Runtime
                 _windowController,
                 _animationController,
                 _needsState,
+                _focusState,
+                _studyRewardService,
+                _studyDeskPresenter,
                 _careUiAssets,
+                _shopUiAssets,
+                _foodUiAssets,
                 _camera,
                 _character.transform,
                 _selectedCharacter,
                 _catalog.Region,
                 _catalog.GameRoot,
+                IsRecordingToolsBuild,
                 RequestCharacterChange,
                 RequestGameInstallChange,
                 RequestGameFilesReload);
 
-            _autonomyController =
-                gameObject.AddComponent<PetAutonomyController>();
-            _autonomyController.Initialize(
-                _animationController,
-                _needsState,
-                _interactionController);
+            if (!IsRecordingToolsBuild)
+            {
+                _autonomyController =
+                    gameObject.AddComponent<PetAutonomyController>();
+                _autonomyController.Initialize(
+                    _animationController,
+                    _needsState,
+                    _focusState,
+                    _interactionController);
+            }
 
             _status = _selectedCharacter.ShortName +
                 " is running. Click, hold to pat, drag, or right-click.";
@@ -401,6 +649,131 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
         }
 
+        private IEnumerator ApplySmokeWindowScaleIfRequested()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            const string ArgumentName = "--smoke-window-scale";
+            if (!HasCommandLineArgument(ArgumentName))
+            {
+                yield break;
+            }
+
+            string value = ReadCommandLineValue(ArgumentName);
+            float requestedScale;
+            if (string.IsNullOrWhiteSpace(value) ||
+                !float.TryParse(
+                    value,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out requestedScale) ||
+                float.IsNaN(requestedScale) ||
+                float.IsInfinity(requestedScale) ||
+                requestedScale <= 0.0f)
+            {
+                throw new InvalidDataException(
+                    ArgumentName + " must be a positive finite number.");
+            }
+
+            int requestedWidth = (int)Math.Round(
+                DesktopWindowController.NativeWindowWidth *
+                    (double)requestedScale,
+                MidpointRounding.AwayFromZero);
+            int requestedHeight = (int)Math.Round(
+                DesktopWindowController.NativeWindowHeight *
+                    (double)requestedScale,
+                MidpointRounding.AwayFromZero);
+            int expectedWidth;
+            int expectedHeight;
+            DesktopWindowController.ConstrainClientSize(
+                requestedWidth,
+                requestedHeight,
+                out expectedWidth,
+                out expectedHeight);
+
+            if (_windowController == null ||
+                !_windowController.TrySetWindowScale(requestedScale))
+            {
+                throw new InvalidOperationException(
+                    "Window scale smoke could not apply " +
+                    requestedScale.ToString(
+                        "0.###",
+                        CultureInfo.InvariantCulture) + ".");
+            }
+
+            const float SizeTolerancePixels = 2.0f;
+            float deadline = Time.realtimeSinceStartup + 5.0f;
+            Vector2 windowSize = Vector2.zero;
+            Vector2 clientSize = Vector2.zero;
+            while (Time.realtimeSinceStartup < deadline)
+            {
+                windowSize = _windowController.WindowSize;
+                clientSize = _windowController.ClientSize;
+                bool screenMatches =
+                    Mathf.Abs(Screen.width - expectedWidth) <=
+                        SizeTolerancePixels &&
+                    Mathf.Abs(Screen.height - expectedHeight) <=
+                        SizeTolerancePixels;
+                bool windowMatches =
+                    Mathf.Abs(windowSize.x - expectedWidth) <=
+                        SizeTolerancePixels &&
+                    Mathf.Abs(windowSize.y - expectedHeight) <=
+                        SizeTolerancePixels;
+                bool clientMatches =
+                    Mathf.Abs(clientSize.x - expectedWidth) <=
+                        SizeTolerancePixels &&
+                    Mathf.Abs(clientSize.y - expectedHeight) <=
+                        SizeTolerancePixels;
+                if (screenMatches && windowMatches && clientMatches)
+                {
+                    Debug.Log(
+                        "Window scale smoke: requested=" +
+                        requestedScale.ToString(
+                            "0.###",
+                            CultureInfo.InvariantCulture) +
+                        ", expected=" + expectedWidth + "x" +
+                        expectedHeight +
+                        ", screen=" + Screen.width + "x" + Screen.height +
+                        ", window=" +
+                        windowSize.x.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture) + "x" +
+                        windowSize.y.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture) +
+                        ", client=" +
+                        clientSize.x.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture) + "x" +
+                        clientSize.y.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture) + ".");
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            throw new InvalidOperationException(
+                "Window scale smoke timed out: requested=" +
+                requestedScale.ToString(
+                    "0.###",
+                    CultureInfo.InvariantCulture) +
+                ", expected=" + expectedWidth + "x" + expectedHeight +
+                ", screen=" + Screen.width + "x" + Screen.height +
+                ", window=" +
+                windowSize.x.ToString("0", CultureInfo.InvariantCulture) +
+                "x" +
+                windowSize.y.ToString("0", CultureInfo.InvariantCulture) +
+                ", client=" +
+                clientSize.x.ToString("0", CultureInfo.InvariantCulture) +
+                "x" +
+                clientSize.y.ToString("0", CultureInfo.InvariantCulture) +
+                ".");
+#else
+            yield break;
+#endif
+        }
+
         private IEnumerator TriggerSmokeActionIfRequested()
         {
             string action = ReadCommandLineValue("--smoke-action");
@@ -444,7 +817,7 @@ namespace UmaDesktopPet.Standalone.Runtime
                     started = _animationController.TriggerFeedResponse();
                     if (started && _needsState != null)
                     {
-                        _needsState.TryFeed();
+                        _needsState.TryFeed(FoodCatalog.CarrotJellyId);
                     }
                     break;
                 case "ambient":
@@ -501,6 +874,61 @@ namespace UmaDesktopPet.Standalone.Runtime
                     StringComparison.OrdinalIgnoreCase));
 #else
             return false;
+#endif
+        }
+
+        private static bool IsRecordingToolsRequested()
+        {
+#if UMA_RECORDING_TOOLS
+            return Array.Exists(
+                Environment.GetCommandLineArgs(),
+                argument => string.Equals(
+                    argument,
+                    "--recording-tools",
+                    StringComparison.OrdinalIgnoreCase));
+#else
+            return false;
+#endif
+        }
+
+        private void PrepareDeskItemForSmokeTest(string itemId)
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            DeskShopItem item;
+            if (!DeskShopCatalog.TryGet(itemId, out item))
+            {
+                throw new InvalidDataException(
+                    "Unknown desk item smoke id: " + itemId + ".");
+            }
+            if (_studyDeskPresenter == null ||
+                !_studyDeskPresenter.CanPresentDeskItem(item.Id))
+            {
+                throw new InvalidDataException(
+                    "Desk item smoke asset is unavailable: " + item.Id + ".");
+            }
+
+            int remaining = item.Cost;
+            while (remaining >= 2)
+            {
+                _focusState.StartSession(PetFocusState.LongSessionSeconds);
+                _focusState.AdvanceTime(PetFocusState.LongSessionSeconds);
+                _studyRewardService.TryCollectReward();
+                remaining -= 2;
+            }
+            if (remaining == 1)
+            {
+                _focusState.StartSession(PetFocusState.ShortSessionSeconds);
+                _focusState.AdvanceTime(PetFocusState.ShortSessionSeconds);
+                _studyRewardService.TryCollectReward();
+            }
+            if (!_focusState.PurchaseDeskItem(item.Id))
+            {
+                throw new InvalidDataException(
+                    "Could not prepare desk item smoke: " + item.Id + ".");
+            }
+#else
+            throw new InvalidOperationException(
+                "Desk item smoke setup is unavailable in a release build.");
 #endif
         }
 
@@ -728,6 +1156,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private void Update()
         {
+            UpdateCameraViewportsIfNeeded();
             if (!_reloadRequested)
             {
                 return;
@@ -858,14 +1287,35 @@ namespace UmaDesktopPet.Standalone.Runtime
             _clearCamera.allowHDR = false;
             _clearCamera.allowMSAA = false;
 
-            _camera.pixelRect = new Rect(
-                DesktopWindowController.SidePanelWidth,
-                0.0f,
-                DesktopWindowController.PetViewportWidth,
-                DesktopWindowController.NativeWindowHeight);
-            _camera.aspect = (float)DesktopWindowController.PetViewportWidth /
-                DesktopWindowController.NativeWindowHeight;
             _camera.depth = 0.0f;
+            UpdateCameraViewportsIfNeeded(true);
+        }
+
+        private void UpdateCameraViewportsIfNeeded(bool force = false)
+        {
+            if (_camera == null)
+            {
+                return;
+            }
+
+            int screenWidth = Mathf.Max(1, Screen.width);
+            int screenHeight = Mathf.Max(1, Screen.height);
+            if (!force &&
+                screenWidth == _cameraViewportScreenWidth &&
+                screenHeight == _cameraViewportScreenHeight)
+            {
+                return;
+            }
+
+            _cameraViewportScreenWidth = screenWidth;
+            _cameraViewportScreenHeight = screenHeight;
+            if (_clearCamera != null)
+            {
+                _clearCamera.rect = new Rect(0.0f, 0.0f, 1.0f, 1.0f);
+            }
+            _camera.pixelRect = DesktopWindowLayout.PhysicalPetViewportRect(
+                new Vector2(screenWidth, screenHeight));
+            _camera.aspect = DesktopWindowLayout.PetAspect;
         }
 
         private GameObject CreateVisualFrame(GameObject characterRoot)
@@ -910,10 +1360,26 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
+            Matrix4x4 previousMatrix = DesktopWindowLayout.BeginGui();
+            try
+            {
+                DrawStatusGui();
+            }
+            finally
+            {
+                DesktopWindowLayout.EndGui(previousMatrix);
+            }
+        }
+
+        private void DrawStatusGui()
+        {
+
             float width = Mathf.Min(
                 DesktopWindowController.PetViewportWidth - 32.0f,
                 620.0f);
-            float height = string.IsNullOrEmpty(_failure) ? 52.0f : Screen.height - 32.0f;
+            float height = string.IsNullOrEmpty(_failure)
+                ? 52.0f
+                : DesktopWindowLayout.LogicalHeight - 32.0f;
             var area = new Rect(
                 DesktopWindowController.SidePanelWidth + 16.0f,
                 16.0f,
@@ -985,11 +1451,36 @@ namespace UmaDesktopPet.Standalone.Runtime
                 _setupPanel.InstallAccepted -= HandleInstallAccepted;
                 _setupPanel.Cancelled -= HandleSetupCancelled;
             }
+            if (_studyRewardService != null)
+            {
+                _studyRewardService.Dispose();
+                _studyRewardService = null;
+            }
+            if (_studyDeskPresenter != null)
+            {
+                _studyDeskPresenter.ReleaseResources();
+                _studyDeskPresenter = null;
+            }
+            if (_attachmentRig != null)
+            {
+                _attachmentRig.ReleaseResources();
+                _attachmentRig = null;
+            }
             if (_character != null)
             {
                 _character.ReleaseResources();
                 Destroy(_character.gameObject);
                 _character = null;
+            }
+            if (_shopUiAssets != null)
+            {
+                _shopUiAssets.Dispose();
+                _shopUiAssets = null;
+            }
+            if (_foodUiAssets != null)
+            {
+                _foodUiAssets.Dispose();
+                _foodUiAssets = null;
             }
             if (_careUiAssets != null)
             {

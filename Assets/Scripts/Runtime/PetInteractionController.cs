@@ -14,8 +14,8 @@ namespace UmaDesktopPet.Standalone.Runtime
         private const float DragThresholdPixels = 7.0f;
         private const float HoldToPatSeconds = 0.58f;
         private const float MaximumTapSeconds = 0.75f;
-        private const float MenuWidth = 308.0f;
-        private const float MenuHeight = 368.0f;
+        private const float MenuWidth = PetSidePanelView.PanelWidth;
+        private const float MenuHeight = PetSidePanelView.PanelHeight;
         private const int MenuSidecarWidth = DesktopWindowController.SidePanelWidth;
         private const float ToastSeconds = 1.8f;
         private const float CarrotSize = 72.0f;
@@ -33,7 +33,13 @@ namespace UmaDesktopPet.Standalone.Runtime
         private DesktopWindowController _window;
         private OguriPetAnimationController _motions;
         private PetNeedsState _needs;
+        private PetFocusState _focus;
+        private PetStudyRewardService _studyRewards;
+        private StudyDeskPresenter _studyDeskPresenter;
+        private PetSidePanelView _sidePanelView;
         private InstalledCareUiAssets _careUiAssets;
+        private InstalledShopUiAssets _shopUiAssets;
+        private InstalledFoodUiAssets _foodUiAssets;
         private Camera _camera;
         private Renderer _mouthRenderer;
         private Transform _mouthTransform;
@@ -46,9 +52,11 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _initialized;
         private bool _pressActive;
         private bool _dragging;
+        private bool _dragUsesPetReaction;
         private bool _holdConsumed;
         private bool _showMenu;
         private MenuPage _menuPage;
+        private PetPanelShopSection _shopSection;
         private Vector2 _pressPointerPosition;
         private Vector2 _menuPosition;
         private Vector2 _characterScroll;
@@ -59,6 +67,11 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _carrotHovering;
         private bool _carrotVisible;
         private bool _feedApplied;
+        private bool _confirmStopStudy;
+        private bool _playStudyCompletionHappy;
+        private bool _recordingToolsEnabled;
+        private bool _recordingToolsOpen;
+        private bool _recordingAnimationsOpen;
         private Vector2 _carrotReleasePosition;
         private Vector2 _mouthGuiPosition;
         private bool _hasMouthGuiPosition;
@@ -80,6 +93,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         private Texture _carrotTexture;
         private Texture2D _fallbackCarrotTexture;
         private Texture2D _carrotCardTexture;
+        private PetFoodDefinition _selectedFood;
 
         public bool IsMenuOpen
         {
@@ -97,7 +111,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 return _characterProfile != null
                     ? _characterProfile.ShortName
-                    : "Oguri";
+                    : "Pet";
             }
         }
 
@@ -121,7 +135,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 return _pressActive ||
                     _dragging ||
-                    IsCareInteractionActive;
+                    IsCareInteractionActive ||
+                    (_focus != null && _focus.IsSessionActive);
             }
         }
 
@@ -129,12 +144,18 @@ namespace UmaDesktopPet.Standalone.Runtime
             DesktopWindowController window,
             OguriPetAnimationController motions,
             PetNeedsState needs,
+            PetFocusState focus,
+            PetStudyRewardService studyRewards,
+            StudyDeskPresenter studyDeskPresenter,
             InstalledCareUiAssets careUiAssets,
+            InstalledShopUiAssets shopUiAssets,
+            InstalledFoodUiAssets foodUiAssets,
             Camera camera,
             Transform characterRoot,
             PetCharacterProfile characterProfile,
             GameRegion gameRegion,
             string gameRoot,
+            bool recordingToolsEnabled,
             Action<string> requestCharacterChange = null,
             Action requestGameInstallChange = null,
             Action requestGameFilesReload = null)
@@ -160,15 +181,34 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 throw new ArgumentNullException("characterProfile");
             }
+            if (focus == null)
+            {
+                throw new ArgumentNullException("focus");
+            }
+            if (studyRewards == null)
+            {
+                throw new ArgumentNullException("studyRewards");
+            }
+            if (studyDeskPresenter == null)
+            {
+                throw new ArgumentNullException("studyDeskPresenter");
+            }
 
             _window = window;
             _motions = motions;
             _needs = needs;
+            _focus = focus;
+            _studyRewards = studyRewards;
+            _studyDeskPresenter = studyDeskPresenter;
+            _sidePanelView = new PetSidePanelView();
             _careUiAssets = careUiAssets;
+            _shopUiAssets = shopUiAssets;
+            _foodUiAssets = foodUiAssets;
             _camera = camera;
             _characterProfile = characterProfile;
             _gameRegion = gameRegion;
             _gameRoot = gameRoot ?? string.Empty;
+            _recordingToolsEnabled = recordingToolsEnabled;
             _mouthTransform = FindDescendant(characterRoot, "M_Mouth");
             if (_mouthTransform != null)
             {
@@ -180,6 +220,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             _motions.FeedBiteStarted += HandleFeedBiteStarted;
             _motions.FeedBiteCommitted += HandleFeedBiteCommitted;
             _motions.FeedResponseCompleted += HandleFeedResponseCompleted;
+            _focus.SessionCompleted += HandleStudyCompleted;
             CreateMenuTextures();
             _initialized = true;
         }
@@ -213,6 +254,53 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             OpenMenu();
             _menuPage = MenuPage.Settings;
+        }
+
+        public void OpenRecordingTools()
+        {
+            if (!_initialized || !_recordingToolsEnabled)
+            {
+                return;
+            }
+
+            OpenMenu();
+            _menuPage = MenuPage.Settings;
+            _recordingToolsOpen = true;
+        }
+
+        public void OpenStudyForSmokeTest()
+        {
+            if (!_initialized)
+            {
+                return;
+            }
+
+            OpenMenu();
+            _menuPage = MenuPage.Study;
+        }
+
+        public void OpenShopForSmokeTest()
+        {
+            if (!_initialized)
+            {
+                return;
+            }
+
+            OpenMenu();
+            _menuPage = MenuPage.Shop;
+            _shopSection = PetPanelShopSection.Shop;
+        }
+
+        public void OpenInventoryForSmokeTest()
+        {
+            if (!_initialized)
+            {
+                return;
+            }
+
+            OpenMenu();
+            _menuPage = MenuPage.Shop;
+            _shopSection = PetPanelShopSection.Inventory;
         }
 
         public void OpenCarrotFeedForSmokeTest()
@@ -301,6 +389,14 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
+            if (_playStudyCompletionHappy && !_motions.IsBusy &&
+                !_focus.IsSessionActive && !_pressActive && !_dragging &&
+                !IsCareInteractionActive && !Input.GetMouseButton(0))
+            {
+                _playStudyCompletionHappy = false;
+                _motions.TriggerAmbientHappy();
+            }
+
             if (Input.GetMouseButtonDown(0))
             {
                 _pressActive = true;
@@ -315,21 +411,36 @@ namespace UmaDesktopPet.Standalone.Runtime
                 Vector2 pointer = GetPointerPosition();
                 float distance = Vector2.Distance(pointer, _pressPointerPosition);
                 float duration = Time.unscaledTime - _pressStartedAt;
+                float dragThreshold =
+                    DesktopWindowLayout.LogicalLengthToPhysical(
+                        DragThresholdPixels);
 
                 if (!_dragging && !_holdConsumed &&
-                    distance > DragThresholdPixels)
+                    distance > dragThreshold)
                 {
                     _dragging = _window.BeginDrag();
                     if (_dragging)
                     {
-                        _motions.BeginDragReaction();
+                        _dragUsesPetReaction = !_focus.IsSessionActive &&
+                            _motions.BeginDragReaction();
+                        if (!_dragUsesPetReaction && !_focus.IsSessionActive)
+                        {
+                            ShowToast(PetName + " is busy right now.");
+                        }
                     }
                 }
                 else if (!_dragging && !_holdConsumed &&
                     duration >= HoldToPatSeconds)
                 {
                     _holdConsumed = true;
-                    TryPat();
+                    if (_focus.IsSessionActive)
+                    {
+                        ShowToast(PetName + " is studying.");
+                    }
+                    else
+                    {
+                        TryPat();
+                    }
                 }
             }
 
@@ -341,19 +452,30 @@ namespace UmaDesktopPet.Standalone.Runtime
                     releasedAt,
                     _pressPointerPosition);
                 float duration = Time.unscaledTime - _pressStartedAt;
+                float dragThreshold =
+                    DesktopWindowLayout.LogicalLengthToPhysical(
+                        DragThresholdPixels);
                 if (_dragging)
                 {
                     _window.EndDrag();
-                    _motions.EndDragReaction();
+                    if (_dragUsesPetReaction)
+                    {
+                        _motions.EndDragReaction();
+                    }
                 }
                 _pressActive = false;
                 _dragging = false;
+                _dragUsesPetReaction = false;
 
                 if (!_holdConsumed &&
-                    distance <= DragThresholdPixels &&
+                    distance <= dragThreshold &&
                     duration <= MaximumTapSeconds)
                 {
-                    if (_motions.TriggerTapReaction())
+                    if (_focus.IsSessionActive)
+                    {
+                        ShowToast(PetName + " is studying.");
+                    }
+                    else if (_motions.TriggerTapReaction())
                     {
                         _needs.RecordTapReaction();
                     }
@@ -367,9 +489,23 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private void OnGUI()
         {
+            Matrix4x4 previousMatrix = DesktopWindowLayout.BeginGui();
+            try
+            {
+                DrawGui();
+            }
+            finally
+            {
+                DesktopWindowLayout.EndGui(previousMatrix);
+            }
+        }
+
+        private void DrawGui()
+        {
             if (!_showMenu)
             {
                 DrawActiveCarrot();
+                DrawFocusBadge();
                 DrawToast();
                 return;
             }
@@ -378,114 +514,525 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
-            float x = Mathf.Clamp(
-                _menuPosition.x,
-                8.0f,
-                Mathf.Max(8.0f, Screen.width - MenuWidth - 8.0f));
-            float y = Mathf.Clamp(
-                _menuPosition.y,
-                8.0f,
-                Mathf.Max(8.0f, Screen.height - MenuHeight - 8.0f));
-            _menuRect = new Rect(x, y, MenuWidth, MenuHeight);
-
-            DrawTexture(_menuRect, _menuPanelTexture);
-            var nameStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontStyle = FontStyle.Bold,
-                fontSize = 17
-            };
-            nameStyle.normal.textColor = GameTextColor;
-            if (_menuPage == MenuPage.Settings)
-            {
-                DrawSettingsPage(x, y, nameStyle);
-                HandleOutsideMenuClick();
-                DrawToast();
-                return;
-            }
-            GUI.Label(
-                new Rect(x + 16.0f, y + 10.0f, MenuWidth - 32.0f, 25.0f),
-                PetName,
-                nameStyle);
-
-            DrawStatusStrip(
-                new Rect(x + 10.0f, y + 40.0f, MenuWidth - 20.0f, 64.0f),
-                _needs.Energy);
-
+            _menuRect = new Rect(0.0f, 0.0f, MenuWidth, MenuHeight);
             if (_carrotFeedPhase != CarrotFeedPhase.None)
             {
-                DrawCarrotFeedMode(x, y);
+                DrawTexture(_menuRect, _menuPanelTexture);
+                DrawCarrotFeedMode(0.0f, 0.0f);
                 DrawToast();
                 return;
             }
 
-            string patLabel = _needs.CanPat
-                ? "Pat " + PetName
-                : "Pat (" + FormatCooldown(_needs.PatCooldownRemainingSeconds) + ")";
-            if (DrawGameButton(
-                new Rect(x + 14.0f, y + 112.0f, MenuWidth - 28.0f, 32.0f),
-                patLabel,
-                true))
-            {
-                TryPat();
-            }
-
-            string feedLabel = _needs.CanFeed
-                ? "Feed a carrot"
-                : "Carrot (" + FormatCooldown(_needs.FeedCooldownRemainingSeconds) + ")";
-            if (DrawGameButton(
-                new Rect(x + 14.0f, y + 150.0f, MenuWidth - 28.0f, 32.0f),
-                feedLabel,
-                true))
-            {
-                BeginCarrotFeed();
-            }
-
-            bool quietMode = DrawGameToggle(
-                new Rect(x + 18.0f, y + 194.0f, MenuWidth - 36.0f, 22.0f),
-                _needs.QuietMode,
-                "Quiet mode (no greetings)");
-            if (quietMode != _needs.QuietMode)
-            {
-                _needs.SetQuietMode(quietMode);
-                ShowToast(quietMode ? "Quiet mode is on." : "Quiet mode is off.");
-            }
-
-            var helpStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 12,
-                alignment = TextAnchor.MiddleCenter,
-                normal = { textColor = GameTextColor }
-            };
-            GUI.Label(
-                new Rect(x + 14.0f, y + 222.0f, MenuWidth - 28.0f, 42.0f),
-                "Click: react     Hold: pat\nDrag: move " + PetName,
-                helpStyle);
-
-            if (DrawGameButton(
-                new Rect(x + 14.0f, y + 276.0f, MenuWidth - 28.0f, 24.0f),
-                "Settings...",
-                false))
-            {
-                _menuPage = MenuPage.Settings;
-            }
-            if (DrawGameButton(
-                new Rect(x + 14.0f, y + 306.0f, MenuWidth - 28.0f, 24.0f),
-                "Close menu",
-                false))
-            {
-                CloseMenu();
-            }
-            if (DrawGameButton(
-                new Rect(x + 14.0f, y + 336.0f, MenuWidth - 28.0f, 24.0f),
-                "Quit desktop pet",
-                false))
-            {
-                Quit();
-            }
-
+            PetPanelCommand command = _sidePanelView.Draw(BuildPanelModel());
+            HandlePanelCommand(command);
             HandleOutsideMenuClick();
-
             DrawToast();
+        }
+
+        private PetPanelModel BuildPanelModel()
+        {
+            Texture moodTexture = null;
+            Texture moodAnimationFrameTexture = null;
+            Texture moodAnimationArrowTexture = null;
+            if (_careUiAssets != null)
+            {
+                _careUiAssets.TryGetMoodTexture(_needs.Mood, out moodTexture);
+                _careUiAssets.TryGetMoodAnimationTextures(
+                    _needs.Mood,
+                    out moodAnimationFrameTexture,
+                    out moodAnimationArrowTexture);
+            }
+
+            PetPanelDeskItemModel[] deskItems =
+                new PetPanelDeskItemModel[DeskShopCatalog.Items.Count];
+            string nextName = string.Empty;
+            int nextCost = 0;
+            Texture nextItemPreview = null;
+            Texture equippedItemPreview = null;
+            bool hasEquippedItem = false;
+            for (int index = 0; index < DeskShopCatalog.Items.Count; index++)
+            {
+                DeskShopItem item = DeskShopCatalog.Items[index];
+                bool owned = _focus.IsDeskItemOwned(item.Id);
+                bool equipped = string.Equals(
+                    _focus.EquippedDeskItemId,
+                    item.Id,
+                    StringComparison.Ordinal);
+                Texture itemIcon = null;
+                if (_shopUiAssets != null)
+                {
+                    _shopUiAssets.TryGetTexture(item.Id, out itemIcon);
+                }
+                deskItems[index] = new PetPanelDeskItemModel
+                {
+                    Id = item.Id,
+                    Name = item.DisplayName,
+                    Cost = item.Cost,
+                    Owned = owned,
+                    Equipped = equipped,
+                    Available = _studyDeskPresenter.CanPresentDeskItem(item.Id),
+                    IconTexture = itemIcon
+                };
+                if (!owned && string.IsNullOrEmpty(nextName))
+                {
+                    nextName = item.ShortName;
+                    nextCost = item.Cost;
+                    nextItemPreview = itemIcon;
+                }
+                if (equipped)
+                {
+                    hasEquippedItem = true;
+                    equippedItemPreview = itemIcon;
+                }
+            }
+
+            Texture deskPreview = hasEquippedItem
+                ? equippedItemPreview
+                : nextItemPreview;
+            if (deskPreview == null && _careUiAssets != null)
+            {
+                _careUiAssets.TryGetCarrotTexture(out deskPreview);
+            }
+
+            PetPanelCharacterOption[] characterOptions =
+                new PetPanelCharacterOption[PetCharacterCatalog.Selectable.Count];
+            for (int index = 0; index < PetCharacterCatalog.Selectable.Count; index++)
+            {
+                PetCharacterProfile profile = PetCharacterCatalog.Selectable[index];
+                characterOptions[index] = new PetPanelCharacterOption
+                {
+                    Key = profile.Key,
+                    DisplayName = profile.DisplayName,
+                    Selected = string.Equals(
+                        profile.Key,
+                        _characterProfile.Key,
+                        StringComparison.Ordinal)
+                };
+            }
+
+            bool studyActive = _focus.IsSessionActive;
+            int carrotJellyQuantity = _needs.GetFoodQuantity(
+                FoodCatalog.CarrotJellyId);
+            return new PetPanelModel
+            {
+                Page = ToPanelPage(_menuPage),
+                Character = new PetPanelCharacterPresentation
+                {
+                    HeaderName = PetName,
+                    Accent = _characterProfile.Theme.Accent,
+                    AccentSoft = _characterProfile.Theme.AccentSoft,
+                    Primary = _characterProfile.Theme.Primary,
+                    PrimaryHover = _characterProfile.Theme.PrimaryHover
+                },
+                Moni = _focus.Moni,
+                Energy = _needs.Energy,
+                EnergyFillTexture = _energyGradientTexture,
+                Mood = _needs.Mood,
+                MoodLabel = _needs.MoodLabel,
+                MoodTexture = moodTexture,
+                MoodAnimationFrameTexture = moodAnimationFrameTexture,
+                MoodAnimationArrowTexture = moodAnimationArrowTexture,
+                CanPat = !studyActive && _needs.CanPat,
+                PatLabel = studyActive
+                    ? PetName + " is studying"
+                    : _needs.CanPat
+                        ? "Pat " + PetName
+                        : "Pat (" + FormatCooldown(
+                            _needs.PatCooldownRemainingSeconds) + ")",
+                CanFeed = !studyActive &&
+                    _needs.CanFeed &&
+                    carrotJellyQuantity > 0,
+                FeedLabel = studyActive
+                    ? "Oguri is studying"
+                    : carrotJellyQuantity <= 0
+                        ? "Study to earn Carrot Jelly"
+                        : _needs.CanFeed
+                            ? "Feed Carrot Jelly  ·  " +
+                                carrotJellyQuantity
+                            : "Carrot Jelly (" + FormatCooldown(
+                                _needs.FeedCooldownRemainingSeconds) + ")",
+                QuietMode = _needs.QuietMode,
+                FocusStatus = _focus.Status,
+                SessionDurationSeconds = _focus.SessionDurationSeconds,
+                RemainingSeconds = _focus.RemainingSeconds,
+                PendingMoni = _focus.PendingMoni,
+                PendingFoodQuantity = _studyRewards.PendingFoodQuantity,
+                ConfirmStopStudy = _confirmStopStudy,
+                ShopSection = _shopSection,
+                DeskItems = deskItems,
+                OwnedDeskItemCount = _focus.OwnedDeskItemCount,
+                NextDeskItemName = nextName,
+                NextDeskItemCost = nextCost,
+                DeskPreviewTexture = deskPreview,
+                CharacterOptions = characterOptions,
+                GameRegionLabel = _gameRegion == GameRegion.Japan
+                    ? "JP"
+                    : "Global",
+                GameRoot = _gameRoot,
+                RecordingToolsEnabled = _recordingToolsEnabled,
+                RecordingToolsOpen = _recordingToolsOpen,
+#if UMA_RECORDING_TOOLS
+                RecordingAnimationsOpen = _recordingAnimationsOpen,
+                CanPlayRecordingAnimation = CanPlayRecordingAnimation(),
+                RecordingAnimationStatus = GetRecordingAnimationStatus()
+#endif
+            };
+        }
+
+        private void HandlePanelCommand(PetPanelCommand command)
+        {
+            switch (command.Type)
+            {
+                case PetPanelCommandType.Close:
+                    CloseMenu();
+                    break;
+                case PetPanelCommandType.Navigate:
+                    MenuPage nextPage = ToMenuPage(command.Page);
+                    _menuPage = nextPage;
+                    _recordingToolsOpen = false;
+#if UMA_RECORDING_TOOLS
+                    _recordingAnimationsOpen = false;
+#endif
+                    _confirmStopStudy = false;
+                    break;
+                case PetPanelCommandType.OpenRecordingTools:
+                    if (_recordingToolsEnabled)
+                    {
+                        _recordingToolsOpen = true;
+#if UMA_RECORDING_TOOLS
+                        _recordingAnimationsOpen = false;
+#endif
+                    }
+                    break;
+                case PetPanelCommandType.CloseRecordingTools:
+                    _recordingToolsOpen = false;
+#if UMA_RECORDING_TOOLS
+                    _recordingAnimationsOpen = false;
+#endif
+                    break;
+#if UMA_RECORDING_TOOLS
+                case PetPanelCommandType.OpenRecordingAnimations:
+                    if (CanUseRecordingTools())
+                    {
+                        _recordingAnimationsOpen = true;
+                    }
+                    break;
+                case PetPanelCommandType.CloseRecordingAnimations:
+                    _recordingAnimationsOpen = false;
+                    break;
+                case PetPanelCommandType.RecordingPlayAnimation:
+                    if (Enum.IsDefined(
+                        typeof(PetRecordingAnimation),
+                        command.Number))
+                    {
+                        TryPlayRecordingAnimation(
+                            (PetRecordingAnimation)command.Number);
+                    }
+                    break;
+#endif
+                case PetPanelCommandType.RecordingSetMood:
+                    if (CanUseRecordingTools() &&
+                        Enum.IsDefined(typeof(PetMood), command.Number) &&
+                        _needs.SetMoodForRecording((PetMood)command.Number))
+                    {
+                        ShowToast(
+                            "Mood set to " +
+                            PetNeedsState.GetMoodLabel(
+                                (PetMood)command.Number) + ".");
+                    }
+                    break;
+                case PetPanelCommandType.RecordingSetStudyRemaining:
+                    if (CanUseRecordingTools() &&
+                        _focus.SetStudyRemainingForRecording(command.Number))
+                    {
+                        ShowToast(
+                            "Study timer set to " +
+                            FormatFocusTime(command.Number) + ".");
+                    }
+                    break;
+                case PetPanelCommandType.RecordingCompleteStudy:
+                    if (CanUseRecordingTools())
+                    {
+                        _focus.CompleteStudyForRecording();
+                    }
+                    break;
+                case PetPanelCommandType.RecordingGiveMoni:
+                    if (CanUseRecordingTools())
+                    {
+                        ShowToast(_focus.GrantMoniForRecording(command.Number)
+                            ? "Added " + command.Number + " Moni."
+                            : "Collect the pending Moni first.");
+                    }
+                    break;
+                case PetPanelCommandType.RecordingResetDeskCollection:
+                    if (CanUseRecordingTools() &&
+                        _focus.ResetDeskCollectionForRecording())
+                    {
+                        ShowToast("Desk collection reset.");
+                    }
+                    break;
+                case PetPanelCommandType.RecordingResetAll:
+                    if (CanUseRecordingTools())
+                    {
+                        _playStudyCompletionHappy = false;
+                        _confirmStopStudy = false;
+                        _focus.ResetRecordingState();
+                        _needs.ResetRecordingState();
+                        ShowToast("Recording state reset.");
+                    }
+                    break;
+                case PetPanelCommandType.Pat:
+                    TryPat();
+                    break;
+                case PetPanelCommandType.Feed:
+                    BeginCarrotFeed();
+                    break;
+                case PetPanelCommandType.StartStudy:
+                    StartStudySession(command.Number);
+                    break;
+                case PetPanelCommandType.ToggleStudyPause:
+                    if (_focus.Status == FocusSessionStatus.Running)
+                    {
+                        if (!_focus.PauseSession())
+                        {
+                            ShowToast("Couldn't save the paused timer.");
+                        }
+                    }
+                    else if (_focus.Status == FocusSessionStatus.Paused &&
+                        !_focus.ResumeSession())
+                    {
+                        ShowToast("Couldn't save the timer.");
+                    }
+                    break;
+                case PetPanelCommandType.RequestStopStudy:
+                    _confirmStopStudy = true;
+                    break;
+                case PetPanelCommandType.KeepStudying:
+                    _confirmStopStudy = false;
+                    break;
+                case PetPanelCommandType.ConfirmStopStudy:
+                    if (_focus.StopSession())
+                    {
+                        _confirmStopStudy = false;
+                        ShowToast("Study session stopped.");
+                    }
+                    else
+                    {
+                        ShowToast("Couldn't save. The timer is still there.");
+                    }
+                    break;
+                case PetPanelCommandType.CollectStudyReward:
+                    ShowToast(_studyRewards.TryCollectReward()
+                        ? "Moni collected!"
+                        : "Couldn't save the rewards. Try again.");
+                    break;
+                case PetPanelCommandType.SelectShopSection:
+                    if (Enum.IsDefined(
+                        typeof(PetPanelShopSection),
+                        command.Number))
+                    {
+                        _shopSection = (PetPanelShopSection)command.Number;
+                    }
+                    break;
+                case PetPanelCommandType.PurchaseDeskItem:
+                    HandleDeskItemPurchase(command.Value);
+                    break;
+                case PetPanelCommandType.EquipDeskItem:
+                    HandleDeskItemEquip(command.Value);
+                    break;
+                case PetPanelCommandType.ClearDeskItem:
+                    ShowToast(_focus.ClearEquippedDeskItem()
+                        ? "Desk item put away."
+                        : "Couldn't put that desk item away.");
+                    break;
+                case PetPanelCommandType.ToggleQuietMode:
+                    _needs.SetQuietMode(!_needs.QuietMode);
+                    ShowToast(_needs.QuietMode
+                        ? "Quiet mode is on."
+                        : "Quiet mode is off.");
+                    break;
+                case PetPanelCommandType.SelectCharacter:
+                    if (_requestCharacterChange != null)
+                    {
+                        CloseMenu();
+                        _requestCharacterChange(command.Value);
+                    }
+                    break;
+                case PetPanelCommandType.ChangeGameFiles:
+                    CloseMenu();
+                    if (_requestGameInstallChange != null)
+                    {
+                        _requestGameInstallChange();
+                    }
+                    break;
+                case PetPanelCommandType.ReloadGameFiles:
+                    CloseMenu();
+                    if (_requestGameFilesReload != null)
+                    {
+                        _requestGameFilesReload();
+                    }
+                    break;
+                case PetPanelCommandType.Quit:
+                    Quit();
+                    break;
+            }
+        }
+
+        private void HandleDeskItemPurchase(string itemId)
+        {
+            DeskShopItem item;
+            if (!DeskShopCatalog.TryGet(itemId, out item))
+            {
+                ShowToast("That desk item isn't available.");
+                return;
+            }
+            if (!_studyDeskPresenter.CanPresentDeskItem(item.Id))
+            {
+                ShowToast("That item isn't available with these game files.");
+                return;
+            }
+            if (_focus.PurchaseDeskItem(item.Id))
+            {
+                ShowToast(item.ShortName + " unlocked!");
+                return;
+            }
+            ShowToast(_focus.Moni < item.Cost
+                ? "You need " + item.Cost + " Moni."
+                : "Couldn't save the purchase. Try again.");
+        }
+
+        private void HandleDeskItemEquip(string itemId)
+        {
+            DeskShopItem item;
+            if (!DeskShopCatalog.TryGet(itemId, out item) ||
+                !_studyDeskPresenter.CanPresentDeskItem(item.Id))
+            {
+                ShowToast("That item isn't available with these game files.");
+                return;
+            }
+            ShowToast(_focus.EquipDeskItem(item.Id)
+                ? item.ShortName + " equipped."
+                : "Couldn't equip that desk item.");
+        }
+
+        private bool CanUseRecordingTools()
+        {
+            return _recordingToolsEnabled &&
+                _focus != null &&
+                _needs != null &&
+                _focus.IsRecordingMode &&
+                _needs.IsRecordingMode;
+        }
+
+#if UMA_RECORDING_TOOLS
+        private bool CanPlayRecordingAnimation()
+        {
+            return CanUseRecordingTools() &&
+                _motions != null &&
+                !_motions.IsBusy &&
+                !_focus.IsSessionActive &&
+                _carrotFeedPhase == CarrotFeedPhase.None &&
+                !_pressActive &&
+                !_dragging;
+        }
+
+        private string GetRecordingAnimationStatus()
+        {
+            if (_focus != null && _focus.IsSessionActive)
+            {
+                return "Study is active";
+            }
+            if (_carrotFeedPhase != CarrotFeedPhase.None)
+            {
+                return "Feeding is active";
+            }
+            if (_motions == null || !_motions.IsBusy)
+            {
+                return "Ready";
+            }
+
+            switch (_motions.CurrentAction)
+            {
+                case "TapReaction":
+                    return "Playing · Tap";
+                case "PatHappy":
+                    return "Playing · Happy";
+                case "FeedResponse":
+                    return "Playing · Eating";
+                case "AmbientGreeting":
+                    return "Playing · Hello";
+                case "Study":
+                    return "Study is active";
+                default:
+                    return "Returning to idle";
+            }
+        }
+
+        private bool TryPlayRecordingAnimation(PetRecordingAnimation animation)
+        {
+            if (!CanPlayRecordingAnimation())
+            {
+                return false;
+            }
+
+            bool started;
+            switch (animation)
+            {
+                case PetRecordingAnimation.Tap:
+                    started = _motions.TriggerTapReaction();
+                    break;
+                case PetRecordingAnimation.Happy:
+                    started = _motions.TriggerAmbientHappy();
+                    break;
+                case PetRecordingAnimation.Eating:
+                    // Feed callbacks are intentionally ignored because recording
+                    // previews never enter the coordinated carrot-feed phase.
+                    started = _motions.TriggerFeedResponse();
+                    break;
+                case PetRecordingAnimation.Hello:
+                    started = _motions.TriggerAmbientGreeting();
+                    break;
+                default:
+                    return false;
+            }
+
+            if (started)
+            {
+                _playStudyCompletionHappy = false;
+                Debug.Log("Recording animation preview: " + animation + ".");
+            }
+            return started;
+        }
+#endif
+
+        private static PetPanelPage ToPanelPage(MenuPage page)
+        {
+            switch (page)
+            {
+                case MenuPage.Study:
+                    return PetPanelPage.Study;
+                case MenuPage.Shop:
+                    return PetPanelPage.Shop;
+                case MenuPage.Settings:
+                    return PetPanelPage.Settings;
+                default:
+                    return PetPanelPage.Home;
+            }
+        }
+
+        private static MenuPage ToMenuPage(PetPanelPage page)
+        {
+            switch (page)
+            {
+                case PetPanelPage.Study:
+                    return MenuPage.Study;
+                case PetPanelPage.Shop:
+                    return MenuPage.Shop;
+                case PetPanelPage.Settings:
+                    return MenuPage.Settings;
+                default:
+                    return MenuPage.Main;
+            }
         }
 
         private void DrawSettingsPage(float x, float y, GUIStyle headingStyle)
@@ -643,13 +1190,294 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
         }
 
+        private void DrawStudyPage(float x, float y, GUIStyle headingStyle)
+        {
+            GUI.Label(
+                new Rect(x + 16.0f, y + 10.0f, MenuWidth - 32.0f, 25.0f),
+                "Study with " + PetName,
+                headingStyle);
+
+            var moniStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontStyle = FontStyle.Bold,
+                fontSize = 12,
+                alignment = TextAnchor.MiddleRight
+            };
+            moniStyle.normal.textColor = GameTextColor;
+            GUI.Label(
+                new Rect(x + 150.0f, y + 10.0f, MenuWidth - 166.0f, 25.0f),
+                _focus.Moni + " Moni",
+                moniStyle);
+
+            var bodyStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 12,
+                alignment = TextAnchor.MiddleCenter,
+                wordWrap = true
+            };
+            bodyStyle.normal.textColor = GameTextColor;
+
+            if (_focus.Status == FocusSessionStatus.Idle)
+            {
+                GUI.Label(
+                    new Rect(x + 20.0f, y + 41.0f, MenuWidth - 40.0f, 38.0f),
+                    "Pick a timer and focus while Oguri studies with you.",
+                    bodyStyle);
+
+                if (DrawGameButton(
+                    new Rect(x + 14.0f, y + 87.0f, MenuWidth - 28.0f, 38.0f),
+                    "25 min · +1 Moni · +1 Jelly · -12 Energy",
+                    true))
+                {
+                    StartStudySession(PetFocusState.ShortSessionSeconds);
+                }
+                if (DrawGameButton(
+                    new Rect(x + 14.0f, y + 133.0f, MenuWidth - 28.0f, 38.0f),
+                    "50 min · +2 Moni · +2 Jelly · -24 Energy",
+                    true))
+                {
+                    StartStudySession(PetFocusState.LongSessionSeconds);
+                }
+                GUI.Label(
+                    new Rect(x + 20.0f, y + 175.0f, MenuWidth - 40.0f, 30.0f),
+                    "Closing the app pauses the timer.",
+                    bodyStyle);
+            }
+            else if (_focus.Status == FocusSessionStatus.RewardReady)
+            {
+                GUI.Label(
+                    new Rect(x + 20.0f, y + 43.0f, MenuWidth - 40.0f, 34.0f),
+                    "Jelly and Energy update before Moni.",
+                    bodyStyle);
+                if (DrawGameButton(
+                    new Rect(x + 14.0f, y + 87.0f, MenuWidth - 28.0f, 42.0f),
+                    "Collect Moni",
+                    true))
+                {
+                    if (_studyRewards.TryCollectReward())
+                    {
+                        ShowToast("Moni collected!");
+                    }
+                    else
+                    {
+                        ShowToast("Couldn't save the rewards. Try again.");
+                    }
+                }
+            }
+            else
+            {
+                var timerStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontStyle = FontStyle.Bold,
+                    fontSize = 30,
+                    alignment = TextAnchor.MiddleCenter
+                };
+                timerStyle.normal.textColor = GameTextColor;
+                GUI.Label(
+                    new Rect(x + 14.0f, y + 42.0f, MenuWidth - 28.0f, 48.0f),
+                    FormatFocusTime(_focus.RemainingSeconds),
+                    timerStyle);
+
+                string sessionState = _focus.Status == FocusSessionStatus.Running
+                    ? PetName + " is studying with you."
+                    : "Paused. Continue whenever you're ready.";
+                GUI.Label(
+                    new Rect(x + 20.0f, y + 91.0f, MenuWidth - 40.0f, 34.0f),
+                    sessionState,
+                    bodyStyle);
+
+                string toggleLabel = _focus.Status == FocusSessionStatus.Running
+                    ? "Pause"
+                    : "Resume";
+                if (DrawGameButton(
+                    new Rect(x + 14.0f, y + 135.0f, MenuWidth - 28.0f, 34.0f),
+                    toggleLabel,
+                    true))
+                {
+                    if (_focus.Status == FocusSessionStatus.Running)
+                    {
+                        if (!_focus.PauseSession())
+                        {
+                            ShowToast("Couldn't save the paused timer.");
+                        }
+                    }
+                    else
+                    {
+                        if (!_focus.ResumeSession())
+                        {
+                            ShowToast("Couldn't save the timer.");
+                        }
+                    }
+                }
+
+                if (_confirmStopStudy)
+                {
+                    GUI.Label(
+                        new Rect(x + 20.0f, y + 176.0f, MenuWidth - 40.0f, 26.0f),
+                        "Stop this session? No Moni is earned.",
+                        bodyStyle);
+                    if (DrawGameButton(
+                        new Rect(x + 14.0f, y + 204.0f, 134.0f, 28.0f),
+                        "Keep studying",
+                        false))
+                    {
+                        _confirmStopStudy = false;
+                    }
+                    if (DrawGameButton(
+                        new Rect(x + 160.0f, y + 204.0f, 134.0f, 28.0f),
+                        "Stop",
+                        false))
+                    {
+                        if (_focus.StopSession())
+                        {
+                            _confirmStopStudy = false;
+                            ShowToast("Study session stopped.");
+                        }
+                        else
+                        {
+                            ShowToast("Couldn't save. The timer is still there.");
+                        }
+                    }
+                }
+                else if (DrawGameButton(
+                    new Rect(x + 14.0f, y + 181.0f, MenuWidth - 28.0f, 28.0f),
+                    "Stop session",
+                    false))
+                {
+                    _confirmStopStudy = true;
+                }
+            }
+
+            DrawDeskReward(x, y, bodyStyle);
+
+            if (DrawGameButton(
+                new Rect(x + 14.0f, y + 306.0f, MenuWidth - 28.0f, 24.0f),
+                "Back",
+                false))
+            {
+                _confirmStopStudy = false;
+                _menuPage = MenuPage.Main;
+            }
+            if (DrawGameButton(
+                new Rect(x + 14.0f, y + 336.0f, MenuWidth - 28.0f, 24.0f),
+                "Close menu",
+                false))
+            {
+                CloseMenu();
+            }
+        }
+
+        private void DrawDeskReward(float x, float y, GUIStyle bodyStyle)
+        {
+            float top = y + 239.0f;
+            var labelStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontStyle = FontStyle.Bold,
+                fontSize = 12,
+                alignment = TextAnchor.MiddleLeft
+            };
+            labelStyle.normal.textColor = GameTextColor;
+            GUI.Label(
+                new Rect(x + 18.0f, top, 110.0f, 24.0f),
+                "Desk rewards",
+                labelStyle);
+
+            string rewardLabel = _focus.CarrotDeskCharmOwned
+                ? "Carrot desk charm  ✓"
+                : "Carrot desk charm  ·  1 Moni";
+            GUI.Label(
+                new Rect(x + 18.0f, top + 25.0f, 184.0f, 30.0f),
+                rewardLabel,
+                bodyStyle);
+
+            if (!_focus.CarrotDeskCharmOwned && DrawGameButton(
+                new Rect(x + 207.0f, top + 26.0f, 87.0f, 28.0f),
+                _focus.Moni >= PetFocusState.CarrotDeskCharmCost
+                    ? "Get"
+                    : "Need 1",
+                false))
+            {
+                if (_focus.PurchaseCarrotDeskCharm())
+                {
+                    ShowToast("Carrot desk charm unlocked!");
+                }
+                else
+                {
+                    ShowToast(
+                        _focus.Moni < PetFocusState.CarrotDeskCharmCost
+                            ? "Finish a study session first."
+                            : "Couldn't save the desk charm. Try again.");
+                }
+            }
+        }
+
+        private void StartStudySession(int durationSeconds)
+        {
+            _playStudyCompletionHappy = false;
+            if (_focus.StartSession(durationSeconds))
+            {
+                _confirmStopStudy = false;
+                ShowToast("Study timer started.");
+            }
+            else
+            {
+                ShowToast("Couldn't save the study timer.");
+            }
+        }
+
+        private void HandleStudyCompleted()
+        {
+            _confirmStopStudy = false;
+            _playStudyCompletionHappy = true;
+            ShowToast("Study session complete!");
+        }
+
+        private void DrawFocusBadge()
+        {
+            if (_focus == null || _focus.Status == FocusSessionStatus.Idle)
+            {
+                return;
+            }
+
+            const float width = 216.0f;
+            const float height = 36.0f;
+            float x = DesktopWindowController.SidePanelWidth +
+                (DesktopWindowController.PetViewportWidth - width) * 0.5f;
+            Rect area = new Rect(x, 12.0f, width, height);
+            DrawDarkPanel(area);
+
+            string label;
+            if (_focus.Status == FocusSessionStatus.Running)
+            {
+                label = "studying  " + FormatFocusTime(_focus.RemainingSeconds);
+            }
+            else if (_focus.Status == FocusSessionStatus.Paused)
+            {
+                label = "study paused  " + FormatFocusTime(_focus.RemainingSeconds);
+            }
+            else
+            {
+                label = "Moni ready to collect";
+            }
+
+            var style = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontStyle = FontStyle.Bold,
+                fontSize = 13
+            };
+            style.normal.textColor = Color.white;
+            GUI.Label(area, label, style);
+        }
+
         private void HandleOutsideMenuClick()
         {
             Event current = Event.current;
             if (current != null &&
                 current.type == EventType.MouseDown &&
                 current.button == 0 &&
-                !_menuRect.Contains(current.mousePosition))
+                !_menuRect.Contains(
+                    DesktopWindowLayout.EventMouseToCurrentGui(current)))
             {
                 CloseMenu();
                 current.Use();
@@ -725,6 +1553,12 @@ namespace UmaDesktopPet.Standalone.Runtime
                     FormatCooldown(_needs.FeedCooldownRemainingSeconds) + ".");
                 return;
             }
+            PetFoodDefinition food = FoodCatalog.CarrotJelly;
+            if (_needs.GetFoodQuantity(food.Id) <= 0)
+            {
+                ShowToast("Study together to earn more Carrot Jelly.");
+                return;
+            }
             if (_motions.IsBusy)
             {
                 ShowToast(PetName + " is busy right now.");
@@ -734,8 +1568,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             if (_carrotTexture == null)
             {
                 Texture installedCarrot;
-                if (_careUiAssets != null &&
-                    _careUiAssets.TryGetCarrotTexture(out installedCarrot))
+                if (_foodUiAssets != null &&
+                    _foodUiAssets.TryGetTexture(food.Id, out installedCarrot))
                 {
                     _carrotTexture = installedCarrot;
                 }
@@ -745,12 +1579,13 @@ namespace UmaDesktopPet.Standalone.Runtime
                     _carrotTexture = _fallbackCarrotTexture;
                 }
             }
+            _selectedFood = food;
             _carrotFeedPhase = CarrotFeedPhase.Ready;
             _carrotHovering = false;
             _carrotVisible = false;
             _feedApplied = false;
             _carrotBiteStartedAt = -1.0f;
-            ShowToast("Drag the carrot to " + PetName + ".");
+            ShowToast("Drag the Carrot Jelly to " + PetName + ".");
         }
 
         private void DrawCarrotFeedMode(float x, float y)
@@ -771,7 +1606,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             titleStyle.normal.textColor = GameTextColor;
             GUI.Label(
                 new Rect(card.x + 10.0f, card.y + 9.0f, card.width - 20.0f, 24.0f),
-                "Drag the carrot to " + PetName,
+                "Drag the Carrot Jelly to " + PetName,
                 titleStyle);
 
             _carrotPickupRect = new Rect(
@@ -782,10 +1617,9 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             Event current = Event.current;
             Vector2 pointer = current != null
-                ? current.mousePosition
-                : new Vector2(
-                    Input.mousePosition.x,
-                    Screen.height - Input.mousePosition.y);
+                ? DesktopWindowLayout.EventMouseToCurrentGui(current)
+                : DesktopWindowLayout.InputMouseToLogicalGui(
+                    Input.mousePosition);
             Rect petTarget = GetPetFeedTarget();
 
             if (_carrotFeedPhase == CarrotFeedPhase.Ready &&
@@ -844,7 +1678,7 @@ namespace UmaDesktopPet.Standalone.Runtime
                 ? "Pick it up"
                 : _carrotHovering
                     ? "Release to feed"
-                    : "Carry it over to her";
+                    : "Carry it over to " + PetName;
             GUI.Label(
                 new Rect(card.x + 10.0f, card.y + 130.0f, card.width - 20.0f, 22.0f),
                 help,
@@ -890,7 +1724,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             _showMenu = false;
             _window.SetSidePanelVisible(false, MenuSidecarWidth);
             Debug.Log(
-                "Carrot feed accepted; prop is visible while " + PetName +
+                "Food accepted; the icon is visible while " + PetName +
                 " approaches the bite.");
             return true;
         }
@@ -923,13 +1757,14 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             _feedApplied = true;
-            bool applied = _needs.TryFeed();
+            bool applied = _selectedFood != null &&
+                _needs.TryFeed(_selectedFood.Id);
             ShowToast(
                 applied
-                    ? PetName + " got the carrot!"
-                    : PetName + " already had a carrot.");
+                    ? PetName + " got the Carrot Jelly!"
+                    : "Couldn't save; the food wasn't used.");
             Debug.Log(
-                "Carrot bite committed; prop hidden and care state applied=" +
+                "Food bite committed; icon hidden and care state applied=" +
                 applied + ".");
         }
 
@@ -943,7 +1778,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             _carrotVisible = false;
             _carrotFeedPhase = CarrotFeedPhase.None;
             _carrotBiteStartedAt = -1.0f;
-            Debug.Log("Carrot feed response completed.");
+            _selectedFood = null;
+            Debug.Log("Food response completed.");
         }
 
         private void CancelCarrotFeed(bool showToast)
@@ -959,19 +1795,24 @@ namespace UmaDesktopPet.Standalone.Runtime
             _carrotVisible = false;
             _feedApplied = false;
             _carrotBiteStartedAt = -1.0f;
+            _selectedFood = null;
             if (showToast)
             {
-                ShowToast("Carrot put away.");
+                ShowToast("Food put away.");
             }
         }
 
         private static Rect GetPetFeedTarget()
         {
             return new Rect(
-                Mathf.Max(0.0f, Screen.width - 310.0f),
+                Mathf.Max(
+                    0.0f,
+                    DesktopWindowLayout.LogicalWidth - 310.0f),
                 40.0f,
                 245.0f,
-                Mathf.Max(240.0f, Screen.height - 74.0f));
+                Mathf.Max(
+                    240.0f,
+                    DesktopWindowLayout.LogicalHeight - 74.0f));
         }
 
         private Vector2 GetPetMouthPoint(Rect petTarget)
@@ -1094,7 +1935,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             const float height = 34.0f;
             float x = DesktopWindowController.SidePanelWidth +
                 (DesktopWindowController.PetViewportWidth - width) * 0.5f;
-            float y = Screen.height - height - 16.0f;
+            float y = DesktopWindowLayout.LogicalHeight - height - 16.0f;
             Rect area = new Rect(x, y, width, height);
             DrawDarkPanel(area);
             GUI.Box(area, GUIContent.none);
@@ -1219,7 +2060,8 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool DrawGameButton(Rect area, string label, bool primary)
         {
             Event current = Event.current;
-            bool hovered = current != null && area.Contains(current.mousePosition);
+            bool hovered = current != null && area.Contains(
+                DesktopWindowLayout.EventMouseToCurrentGui(current));
             Texture2D background = primary
                 ? hovered
                     ? _primaryButtonHoverTexture
@@ -1286,8 +2128,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             _menuPanelTexture = CreateRoundedRectTexture(
-                308,
-                338,
+                (int)MenuWidth,
+                (int)MenuHeight,
                 12.0f,
                 new Color(0.91f, 0.97f, 1.0f, 0.98f),
                 new Color(0.36f, 0.48f, 0.60f, 1.0f),
@@ -1536,6 +2378,14 @@ namespace UmaDesktopPet.Standalone.Runtime
             return Math.Max(1, (int)Math.Ceiling(seconds)) + "s";
         }
 
+        private static string FormatFocusTime(double seconds)
+        {
+            int remaining = Math.Max(0, (int)Math.Ceiling(seconds));
+            int minutes = remaining / 60;
+            int secondsPart = remaining % 60;
+            return minutes.ToString("00") + ":" + secondsPart.ToString("00");
+        }
+
         private Vector2 GetPointerPosition()
         {
             if (_window != null && _window.IsSupported)
@@ -1562,9 +2412,12 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
-            _mouthGuiPosition = new Vector2(
-                screenPosition.x,
-                Screen.height - screenPosition.y);
+            Vector2 physicalSize = DesktopWindowLayout.CurrentPhysicalSize;
+            _mouthGuiPosition = DesktopWindowLayout.PhysicalGuiToLogical(
+                new Vector2(
+                    screenPosition.x,
+                    physicalSize.y - screenPosition.y),
+                physicalSize);
             _hasMouthGuiPosition = true;
         }
 
@@ -1617,6 +2470,15 @@ namespace UmaDesktopPet.Standalone.Runtime
                 _motions.FeedBiteCommitted -= HandleFeedBiteCommitted;
                 _motions.FeedResponseCompleted -= HandleFeedResponseCompleted;
             }
+            if (_focus != null)
+            {
+                _focus.SessionCompleted -= HandleStudyCompleted;
+            }
+            if (_sidePanelView != null)
+            {
+                _sidePanelView.Dispose();
+                _sidePanelView = null;
+            }
             DestroyMenuTexture(ref _menuPanelTexture);
             DestroyMenuTexture(ref _statusPanelTexture);
             DestroyMenuTexture(ref _energyFrameTexture);
@@ -1653,11 +2515,13 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             _window.SetSidePanelVisible(true, MenuSidecarWidth);
-            _menuPosition = new Vector2(
-                8.0f,
-                Mathf.Max(8.0f, (Screen.height - MenuHeight) * 0.5f));
+            _menuPosition = Vector2.zero;
             _showMenu = true;
             _menuPage = MenuPage.Main;
+            _recordingToolsOpen = false;
+#if UMA_RECORDING_TOOLS
+            _recordingAnimationsOpen = false;
+#endif
             CancelPress();
         }
 
@@ -1671,22 +2535,28 @@ namespace UmaDesktopPet.Standalone.Runtime
             CancelCarrotFeed(false);
             _showMenu = false;
             _menuPage = MenuPage.Main;
+            _recordingToolsOpen = false;
+#if UMA_RECORDING_TOOLS
+            _recordingAnimationsOpen = false;
+#endif
             _window.SetSidePanelVisible(false, MenuSidecarWidth);
         }
 
         private void CancelPress()
         {
             bool wasDragging = _dragging;
+            bool usedPetReaction = _dragUsesPetReaction;
             if (_window != null)
             {
                 _window.EndDrag();
             }
-            if (wasDragging && _motions != null)
+            if (wasDragging && usedPetReaction && _motions != null)
             {
                 _motions.EndDragReaction();
             }
             _pressActive = false;
             _dragging = false;
+            _dragUsesPetReaction = false;
             _holdConsumed = false;
         }
 
@@ -1702,7 +2572,9 @@ namespace UmaDesktopPet.Standalone.Runtime
         private enum MenuPage
         {
             Main,
-            Settings
+            Settings,
+            Study,
+            Shop
         }
 
         private enum CarrotFeedPhase

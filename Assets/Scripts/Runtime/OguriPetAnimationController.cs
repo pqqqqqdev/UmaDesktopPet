@@ -71,12 +71,23 @@ namespace UmaDesktopPet.Standalone.Runtime
             "3d/motion/mini/minigame/mng_0001/body/type00/" +
             "anm_min_mng_0001_type00_catch01_bad01";
 
+        public const string StudyStartAsset =
+            "3d/motion/mini/event/body/type00/" +
+            "anm_min_eve_type00_book_s";
+        public const string StudyLoopAsset =
+            "3d/motion/mini/event/body/type00/" +
+            "anm_min_eve_type00_book_loop";
+        public const string StudyEndAsset =
+            "3d/motion/mini/event/body/type00/" +
+            "anm_min_eve_type00_book_e";
+
         private const double DragHoldNormalizedTime = 0.42d;
         private const double DragPlaybackSpeed = 1.65d;
         private const double DragHoldSwayRange = 0.012d;
         private const double DragHoldSwayCyclesPerSecond = 0.7d;
         private const float DragPickupBlendSeconds = 0.16f;
         private const float DragReleaseBlendSeconds = 0.10f;
+        private const float StudyExitBlendSeconds = 0.16f;
 
         private static readonly string[] RequiredMotionAssets =
         {
@@ -99,9 +110,17 @@ namespace UmaDesktopPet.Standalone.Runtime
             DragHoldAsset
         };
 
+        private static readonly string[] OptionalStudyMotionAssets =
+        {
+            StudyStartAsset,
+            StudyLoopAsset,
+            StudyEndAsset
+        };
+
         private Animator _animator;
         private MiniFaceExpressionController _face;
         private BundleLease _motionLease;
+        private BundleLease _studyMotionLease;
         private PlayableGraph _graph;
         private AnimationMixerPlayable _mixer;
         private AnimationClipPlayable _currentPlayable;
@@ -119,6 +138,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         private MotionSequence _patHappy;
         private MotionSequence _feedResponse;
         private MotionSequence _ambientGreeting;
+        private MotionSequence _study;
         private AnimationClip _dragLift;
         private AnimationClip _dragHold;
         private double _dragHoldNormalizedTime;
@@ -126,6 +146,8 @@ namespace UmaDesktopPet.Standalone.Runtime
         private MotionSequence _activeAction;
         private MotionPhase _phase;
         private bool _dragHeld;
+        private bool _studyRequested;
+        private bool _studyPaused;
         private bool _initialized;
 
         /// <summary>
@@ -143,6 +165,30 @@ namespace UmaDesktopPet.Standalone.Runtime
             get { return _initialized && _phase != MotionPhase.IdleLoop; }
         }
 
+        /// <summary>
+        /// True when all three optional installed book clips were available.
+        /// A false value is a supported degraded mode and never blocks startup.
+        /// </summary>
+        public bool HasStudyMotion
+        {
+            get { return _study != null; }
+        }
+
+        /// <summary>
+        /// True while a caller wants the held study visual to remain active.
+        /// The value stays true while dragging so the study visual can resume
+        /// after the existing drag release completes.
+        /// </summary>
+        public bool IsStudying
+        {
+            get { return _initialized && _studyRequested; }
+        }
+
+        public bool IsStudyPaused
+        {
+            get { return IsStudying && _studyPaused; }
+        }
+
         public string CurrentPhase
         {
             get
@@ -152,15 +198,16 @@ namespace UmaDesktopPet.Standalone.Runtime
                     return "Uninitialized";
                 }
 
-                return _activeAction == null
+                string action = GetCurrentActionName();
+                return string.Equals(action, "None", StringComparison.Ordinal)
                     ? _phase.ToString()
-                    : _activeAction.Name + "/" + _phase;
+                    : action + "/" + _phase;
             }
         }
 
         public string CurrentAction
         {
-            get { return _activeAction == null ? "None" : _activeAction.Name; }
+            get { return GetCurrentActionName(); }
         }
 
         public bool UsesDragFraming
@@ -260,6 +307,7 @@ namespace UmaDesktopPet.Standalone.Runtime
                 _dragHold = LoadRequiredClip(
                     _motionLease,
                     selectedDragHoldAsset);
+                TryLoadOptionalStudyMotion(repository);
 
                 ConfigureAnimator();
                 CreateGraph();
@@ -317,6 +365,85 @@ namespace UmaDesktopPet.Standalone.Runtime
         }
 
         /// <summary>
+        /// Starts the optional book sequence from a clean idle. Study is a held
+        /// action: its loop continues until EndStudy is called. Ordinary authored
+        /// responses are never interrupted to begin studying.
+        /// </summary>
+        public bool BeginStudy()
+        {
+            if (!_initialized || _study == null || _studyRequested ||
+                _phase != MotionPhase.IdleLoop || _activeAction != null ||
+                _dragHeld)
+            {
+                return false;
+            }
+
+            _studyRequested = true;
+            _studyPaused = false;
+            _face.Show(MiniFaceExpression.Neutral);
+            PlayPhase(MotionPhase.IdleEnd, _idleEnd);
+            return true;
+        }
+
+        /// <summary>
+        /// Freezes or resumes the held study loop without changing the caller-owned
+        /// focus timer. The short authored entrance is allowed to settle before a
+        /// requested pause takes effect. A pause requested during drag is remembered
+        /// and applied when the study visual resumes after landing.
+        /// </summary>
+        public bool SetStudyPaused(bool paused)
+        {
+            if (!_initialized || !_studyRequested)
+            {
+                return false;
+            }
+
+            _studyPaused = paused;
+            ApplyStudyPlaybackSpeed();
+            return true;
+        }
+
+        /// <summary>
+        /// Ends a requested study visual. If a drag is in progress, the landing
+        /// remains untouched and simply returns to idle instead of resuming study.
+        /// </summary>
+        public bool EndStudy()
+        {
+            if (!_initialized || !_studyRequested)
+            {
+                return false;
+            }
+
+            _studyRequested = false;
+            _studyPaused = false;
+            _face.Show(MiniFaceExpression.Neutral);
+
+            if (_phase == MotionPhase.IdleEnd && _activeAction == null)
+            {
+                BlendToPhase(
+                    MotionPhase.IdleStart,
+                    _idleStart,
+                    0.0d,
+                    1.0d,
+                    StudyExitBlendSeconds);
+            }
+            else if (_phase == MotionPhase.StudyStart ||
+                _phase == MotionPhase.StudyLoop)
+            {
+                // book_e visibly puts away an imaginary hand-held book. That
+                // authored action does not match the desk/notebook study setup,
+                // so leave the held pose with a short neutral blend instead.
+                BlendToPhase(
+                    MotionPhase.IdleStart,
+                    _idleStart,
+                    0.0d,
+                    1.0d,
+                    StudyExitBlendSeconds);
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Interrupts an ordinary idle or reaction with an authored held pose.
         /// Feeding owns pointer input while it is active, so it is never cut off
         /// by this interaction.
@@ -371,7 +498,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public bool TryPreviewFace(MiniFaceExpression expression)
         {
             if (!_initialized || _phase != MotionPhase.IdleLoop ||
-                _activeAction != null)
+                _activeAction != null || _studyRequested)
             {
                 return false;
             }
@@ -383,7 +510,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public void ClearPreviewFace()
         {
             if (!_initialized || _phase != MotionPhase.IdleLoop ||
-                _activeAction != null)
+                _activeAction != null || _studyRequested)
             {
                 return;
             }
@@ -393,7 +520,8 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private bool TryStartAction(MotionSequence action)
         {
-            if (!_initialized || _phase != MotionPhase.IdleLoop || action == null)
+            if (!_initialized || _phase != MotionPhase.IdleLoop || action == null ||
+                _studyRequested)
             {
                 return false;
             }
@@ -440,7 +568,14 @@ namespace UmaDesktopPet.Standalone.Runtime
                     WrapCurrentClip(duration, time);
                     break;
                 case MotionPhase.IdleEnd:
-                    PlayActiveActionPhase(MotionPhase.ActionStart, ActionClip.Start);
+                    if (_studyRequested && _study != null)
+                    {
+                        PlayStudyPhase(MotionPhase.StudyStart, _study.Start);
+                    }
+                    else
+                    {
+                        PlayActiveActionPhase(MotionPhase.ActionStart, ActionClip.Start);
+                    }
                     break;
                 case MotionPhase.ActionStart:
                     PlayActiveActionPhase(MotionPhase.ActionLoop, ActionClip.Loop);
@@ -458,12 +593,53 @@ namespace UmaDesktopPet.Standalone.Runtime
                         Raise(FeedResponseCompleted);
                     }
                     break;
+                case MotionPhase.StudyStart:
+                    if (_studyRequested)
+                    {
+                        PlayStudyPhase(MotionPhase.StudyLoop, _study.Loop);
+                    }
+                    else
+                    {
+                        BlendToPhase(
+                            MotionPhase.IdleStart,
+                            _idleStart,
+                            0.0d,
+                            1.0d,
+                            StudyExitBlendSeconds);
+                    }
+                    break;
+                case MotionPhase.StudyLoop:
+                    if (_studyRequested)
+                    {
+                        WrapCurrentClip(duration, time);
+                    }
+                    else
+                    {
+                        BlendToPhase(
+                            MotionPhase.IdleStart,
+                            _idleStart,
+                            0.0d,
+                            1.0d,
+                            StudyExitBlendSeconds);
+                    }
+                    break;
+                case MotionPhase.StudyEnd:
+                    _face.Show(MiniFaceExpression.Neutral);
+                    PlayPhase(MotionPhase.IdleStart, _idleStart);
+                    break;
                 case MotionPhase.DragLift:
                 case MotionPhase.DragHold:
                     break;
                 case MotionPhase.DragRelease:
                     _face.Show(MiniFaceExpression.Neutral);
-                    PlayPhase(MotionPhase.IdleStart, _idleStart);
+                    if (_studyRequested && _study != null)
+                    {
+                        PlayStudyPhase(MotionPhase.StudyStart, _study.Start);
+                    }
+                    else
+                    {
+                        PlayPhase(MotionPhase.IdleStart, _idleStart);
+                    }
                     break;
                 default:
                     throw new InvalidOperationException(
@@ -522,6 +698,43 @@ namespace UmaDesktopPet.Standalone.Runtime
                     Raise(FeedBiteCommitted);
                 }
             }
+        }
+
+        private void PlayStudyPhase(MotionPhase phase, AnimationClip clip)
+        {
+            _face.Show(MiniFaceExpression.Neutral);
+            PlayPhase(phase, clip);
+            ApplyStudyPlaybackSpeed();
+        }
+
+        private void ApplyStudyPlaybackSpeed()
+        {
+            if (!_currentPlayable.IsValid() || _phase != MotionPhase.StudyLoop)
+            {
+                return;
+            }
+
+            _currentPlayable.SetSpeed(_studyPaused ? 0.0d : 1.0d);
+        }
+
+        private string GetCurrentActionName()
+        {
+            if (_activeAction != null)
+            {
+                return _activeAction.Name;
+            }
+            if (_studyRequested || IsStudyPhase(_phase))
+            {
+                return "Study";
+            }
+            return "None";
+        }
+
+        private static bool IsStudyPhase(MotionPhase phase)
+        {
+            return phase == MotionPhase.StudyStart ||
+                phase == MotionPhase.StudyLoop ||
+                phase == MotionPhase.StudyEnd;
         }
 
         private static void Raise(Action handler)
@@ -771,6 +984,47 @@ namespace UmaDesktopPet.Standalone.Runtime
                 expression);
         }
 
+        private void TryLoadOptionalStudyMotion(BundleRepository repository)
+        {
+            BundleLease optionalLease = null;
+            try
+            {
+                optionalLease = repository.AcquireMany(OptionalStudyMotionAssets);
+                MotionSequence sequence = LoadSequence(
+                    optionalLease,
+                    "Study",
+                    StudyStartAsset,
+                    StudyLoopAsset,
+                    StudyEndAsset,
+                    MiniFaceExpression.Neutral);
+                _studyMotionLease = optionalLease;
+                _study = sequence;
+                Debug.Log("Optional Oguri study motion is available.");
+            }
+            catch (Exception exception)
+            {
+                if (optionalLease != null)
+                {
+                    try
+                    {
+                        optionalLease.Dispose();
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        Debug.LogWarning(
+                            "Could not release the optional Oguri study bundles: " +
+                            cleanupException.Message);
+                    }
+                }
+
+                _studyMotionLease = null;
+                _study = null;
+                Debug.LogWarning(
+                    "Optional Oguri study motion is unavailable; continuing " +
+                    "without it. " + exception.Message);
+            }
+        }
+
         private void OnEnable()
         {
             if (_graph.IsValid())
@@ -815,13 +1069,31 @@ namespace UmaDesktopPet.Standalone.Runtime
             _patHappy = null;
             _feedResponse = null;
             _ambientGreeting = null;
+            _study = null;
             _dragLift = null;
             _dragHold = null;
             _dragHoldNormalizedTime = DragHoldNormalizedTime;
             _dragHoldStartedAt = 0.0d;
             _activeAction = null;
             _dragHeld = false;
+            _studyRequested = false;
+            _studyPaused = false;
             _face = null;
+
+            if (_studyMotionLease != null)
+            {
+                try
+                {
+                    _studyMotionLease.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning(
+                        "Could not release the optional Oguri study bundles: " +
+                        exception.Message);
+                }
+                _studyMotionLease = null;
+            }
 
             if (_motionLease != null)
             {
@@ -839,6 +1111,9 @@ namespace UmaDesktopPet.Standalone.Runtime
             ActionStart,
             ActionLoop,
             ActionEnd,
+            StudyStart,
+            StudyLoop,
+            StudyEnd,
             DragLift,
             DragHold,
             DragRelease

@@ -14,3 +14,10 @@ License: MIT
 The package is pinned to commit 304f9ba2aa4a8fae7f3c71f38118c44722a2f6cc.
 The complete license text is provided by the pinned package and will be copied
 into the packaged application's Licenses directory.
+
+Bootstrap Icons 1.11.3
+Copyright (c) 2019-2024 The Bootstrap Authors
+https://github.com/twbs/icons
+License: MIT
+The interface uses a small rasterized subset of the official icon set. The
+complete license text is copied into the packaged application's Licenses folder.

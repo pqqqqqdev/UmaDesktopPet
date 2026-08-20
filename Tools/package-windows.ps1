@@ -33,6 +33,15 @@ if (-not (Test-Path -LiteralPath $resolvedBuild -PathType Container)) {
     throw "Build directory does not exist: $resolvedBuild"
 }
 
+$recordingOnlyMarker = Join-Path $resolvedBuild "RECORDING_ONLY_DO_NOT_SHIP.txt"
+if (Test-Path -LiteralPath $recordingOnlyMarker -PathType Leaf) {
+    throw "Refusing to package a recording-only player: $recordingOnlyMarker"
+}
+$recordingLauncher = Join-Path $resolvedBuild "Launch-Recording-Tools.cmd"
+if (Test-Path -LiteralPath $recordingLauncher -PathType Leaf) {
+    throw "Refusing to package a recording-tools launcher: $recordingLauncher"
+}
+
 $requiredBuildEntries = @(
     "UmaDesktopPet.exe",
     "UmaDesktopPet_Data",
@@ -61,8 +70,17 @@ if (-not $packageDirectory.StartsWith(
 }
 if ($packageDirectory.StartsWith(
         $buildPrefix,
-        [System.StringComparison]::OrdinalIgnoreCase)) {
+    [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Output directory cannot be inside the Unity build directory."
+}
+$packagePrefix = $packageDirectory.TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar) +
+    [System.IO.Path]::DirectorySeparatorChar
+if ($buildPrefix.StartsWith(
+        $packagePrefix,
+        [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Unity build directory cannot be inside the package staging directory."
 }
 
 if (Test-Path -LiteralPath $packageDirectory) {
@@ -108,6 +126,10 @@ $supportFiles = @(
     @{
         Source = "ThirdParty\UniWindowController\LICENSE.md"
         Destination = "Licenses\UniWindowController-MIT.txt"
+    },
+    @{
+        Source = "ThirdParty\BootstrapIcons\LICENSE"
+        Destination = "Licenses\BootstrapIcons-MIT.txt"
     }
 )
 foreach ($supportFile in $supportFiles) {

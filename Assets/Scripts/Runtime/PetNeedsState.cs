@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using UnityEngine;
@@ -24,29 +25,84 @@ namespace UmaDesktopPet.Standalone.Runtime
         Feed
     }
 
+    public struct PetFoodStackSnapshot
+    {
+        public string FoodId { get; private set; }
+        public int Quantity { get; private set; }
+
+        internal PetFoodStackSnapshot(string foodId, int quantity)
+        {
+            FoodId = foodId;
+            Quantity = quantity;
+        }
+    }
+
     /// <summary>
     /// Immutable view of the pet's gentle, game-inspired state.
     /// </summary>
     public struct PetNeedsSnapshot
     {
+        private static readonly PetFoodStackSnapshot[] EmptyFoodStacks =
+            new PetFoodStackSnapshot[0];
+        private readonly PetFoodStackSnapshot[] _foodStacks;
+
         public PetMood Mood { get; private set; }
         public float Energy { get; private set; }
         public bool QuietMode { get; private set; }
         public double PatCooldownRemainingSeconds { get; private set; }
         public double FeedCooldownRemainingSeconds { get; private set; }
+        public long LastAppliedStudyCompletionId { get; private set; }
 
         internal PetNeedsSnapshot(
             PetMood mood,
             float energy,
             bool quietMode,
             double patCooldownRemainingSeconds,
-            double feedCooldownRemainingSeconds)
+            double feedCooldownRemainingSeconds,
+            PetFoodStackSnapshot[] foodStacks,
+            long lastAppliedStudyCompletionId)
         {
             Mood = mood;
             Energy = energy;
             QuietMode = quietMode;
             PatCooldownRemainingSeconds = patCooldownRemainingSeconds;
             FeedCooldownRemainingSeconds = feedCooldownRemainingSeconds;
+            _foodStacks = foodStacks == null
+                ? EmptyFoodStacks
+                : (PetFoodStackSnapshot[])foodStacks.Clone();
+            LastAppliedStudyCompletionId = lastAppliedStudyCompletionId;
+        }
+
+        public IReadOnlyList<PetFoodStackSnapshot> FoodStacks
+        {
+            get { return _foodStacks ?? EmptyFoodStacks; }
+        }
+
+        public int GetFoodQuantity(string foodId)
+        {
+            if (string.IsNullOrEmpty(foodId))
+            {
+                return 0;
+            }
+
+            PetFoodStackSnapshot[] stacks = _foodStacks ?? EmptyFoodStacks;
+            for (int index = 0; index < stacks.Length; index++)
+            {
+                if (string.Equals(
+                    stacks[index].FoodId,
+                    foodId,
+                    StringComparison.Ordinal))
+                {
+                    return stacks[index].Quantity;
+                }
+            }
+            return 0;
+        }
+
+        internal PetFoodStackSnapshot[] CopyFoodStacks()
+        {
+            return (PetFoodStackSnapshot[])
+                (_foodStacks ?? EmptyFoodStacks).Clone();
         }
     }
 
@@ -58,7 +114,9 @@ namespace UmaDesktopPet.Standalone.Runtime
     [DisallowMultipleComponent]
     public sealed class PetNeedsState : MonoBehaviour
     {
-        private const int CurrentSaveVersion = 2;
+        public const int StarterCarrotJellyQuantity = 3;
+
+        private const int CurrentSaveVersion = 3;
         private const string SaveFileName = "pet-needs.json";
         private const string LegacyBackupFileName = "pet-needs.v1.json.bak";
 
@@ -73,8 +131,6 @@ namespace UmaDesktopPet.Standalone.Runtime
         // Keeping the serialized fields preserves save compatibility and makes
         // it straightforward to tune them again later if the care loop needs it.
         [SerializeField, Min(0.0f)] private float patCooldownSeconds = 0.0f;
-        [SerializeField, Range(0, 4)] private int feedMoodGainSteps = 1;
-        [SerializeField, Min(0.0f)] private float feedEnergyGain = 18.0f;
         [SerializeField, Min(0.0f)] private float feedCooldownSeconds = 0.0f;
 
         [Header("Other reactions")]
@@ -84,6 +140,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         [Header("Runtime and persistence")]
         [SerializeField] private bool automaticTimeEnabled = true;
         [SerializeField] private bool loadOnAwake = true;
+        [SerializeField] private bool saveOnStateChanges = true;
         [SerializeField] private bool saveOnLifecycleEvents = true;
         [SerializeField, Min(0.1f)] private float automaticTickSeconds = 1.0f;
         [SerializeField, Min(1.0f)] private float autosaveIntervalSeconds = 60.0f;
@@ -93,17 +150,25 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _quietMode;
         private double _patCooldownRemainingSeconds;
         private double _feedCooldownRemainingSeconds;
+        private readonly Dictionary<string, int> _foodQuantities =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+        private long _lastAppliedStudyCompletionId;
         private double _lastRealtimeSeconds;
         private double _automaticTimeAccumulator;
         private double _autosaveAccumulator;
         private bool _wasPaused;
         private bool _isQuitting;
         private bool _persistenceWriteBlocked;
+        private bool _recordingModeEnabled;
+#if UNITY_EDITOR
+        private string _persistencePathOverride;
+#endif
 
         public PetMood Mood { get { return _mood; } }
         public string MoodLabel { get { return GetMoodLabel(_mood); } }
         public float Energy { get { return _energy; } }
         public bool QuietMode { get { return _quietMode; } }
+        public bool IsRecordingMode { get { return _recordingModeEnabled; } }
         public bool IsLowEnergy { get { return _energy <= lowEnergyThreshold; } }
 
         public double PatCooldownRemainingSeconds
@@ -117,11 +182,32 @@ namespace UmaDesktopPet.Standalone.Runtime
         }
 
         public bool CanPat { get { return _patCooldownRemainingSeconds <= 0.0; } }
-        public bool CanFeed { get { return _feedCooldownRemainingSeconds <= 0.0; } }
+        public bool CanFeed
+        {
+            get
+            {
+                return _feedCooldownRemainingSeconds <= 0.0 &&
+                    GetFoodQuantity(FoodCatalog.CarrotJellyId) > 0;
+            }
+        }
+
+        public long LastAppliedStudyCompletionId
+        {
+            get { return _lastAppliedStudyCompletionId; }
+        }
 
         public string PersistencePath
         {
-            get { return Path.Combine(Application.persistentDataPath, SaveFileName); }
+            get
+            {
+#if UNITY_EDITOR
+                if (!string.IsNullOrEmpty(_persistencePathOverride))
+                {
+                    return _persistencePathOverride;
+                }
+#endif
+                return Path.Combine(Application.persistentDataPath, SaveFileName);
+            }
         }
 
         public PetNeedsSnapshot CurrentSnapshot
@@ -133,7 +219,9 @@ namespace UmaDesktopPet.Standalone.Runtime
                     _energy,
                     _quietMode,
                     _patCooldownRemainingSeconds,
-                    _feedCooldownRemainingSeconds);
+                    _feedCooldownRemainingSeconds,
+                    GetFoodStacksInCatalogOrder(),
+                    _lastAppliedStudyCompletionId);
             }
         }
 
@@ -149,6 +237,17 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private void Awake()
         {
+#if UMA_RECORDING_TOOLS
+            EnterRecordingMode();
+            return;
+#endif
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (IsSmokeProcess())
+            {
+                ResetForSmokeTest();
+                return;
+            }
+#endif
             ResetNeedsInternal();
             if (loadOnAwake)
             {
@@ -236,20 +335,89 @@ namespace UmaDesktopPet.Standalone.Runtime
             return true;
         }
 
+        public int GetFoodQuantity(string foodId)
+        {
+            int quantity;
+            return !string.IsNullOrEmpty(foodId) &&
+                _foodQuantities.TryGetValue(foodId, out quantity)
+                ? quantity
+                : 0;
+        }
+
         public bool TryFeed()
         {
-            if (!CanFeed)
+            return TryFeed(FoodCatalog.CarrotJellyId);
+        }
+
+        /// <summary>
+        /// Consumes one food and applies its catalog effects in the same durable
+        /// transaction. No state or care event is published when saving fails.
+        /// </summary>
+        public bool TryFeed(string foodId)
+        {
+            PetFoodDefinition food;
+            if (_feedCooldownRemainingSeconds > 0.0 ||
+                !FoodCatalog.TryGet(foodId, out food) ||
+                GetFoodQuantity(food.Id) <= 0)
             {
                 return false;
             }
 
-            _mood = PromoteMood(_mood, feedMoodGainSteps);
+            PetNeedsSnapshot previous = CurrentSnapshot;
+            int remaining = GetFoodQuantity(food.Id) - 1;
+            if (remaining == 0)
+            {
+                _foodQuantities.Remove(food.Id);
+            }
+            else
+            {
+                _foodQuantities[food.Id] = remaining;
+            }
+            _mood = PromoteMood(_mood, food.MoodGainSteps);
             _energy = ClampEnergy(
-                _energy + Math.Max(0.0f, feedEnergyGain));
+                _energy + food.EnergyGain);
             _feedCooldownRemainingSeconds = Math.Max(0.0, feedCooldownSeconds);
-            PublishStateChanged();
-            RaiseCareActionApplied(PetCareAction.Feed);
-            return true;
+            return TryCommitSynchronous(previous, PetCareAction.Feed);
+        }
+
+        /// <summary>
+        /// Applies one focus completion to the shared pantry and Energy. The
+        /// monotonically increasing ID makes retries harmless across the focus
+        /// and care save files. A full stack grants zero food but never blocks
+        /// the completion, Moni collection, or Energy cost.
+        /// </summary>
+        public bool TryApplyStudyCompletion(
+            long completionId,
+            int foodQuantity,
+            float energyCost)
+        {
+            if (completionId < 0)
+            {
+                return false;
+            }
+            if (completionId <= _lastAppliedStudyCompletionId)
+            {
+                return true;
+            }
+            if (foodQuantity < 0 ||
+                !IsFinite(energyCost) ||
+                energyCost < 0.0f)
+            {
+                return false;
+            }
+
+            PetNeedsSnapshot previous = CurrentSnapshot;
+            PetFoodDefinition food = FoodCatalog.CarrotJelly;
+            int currentQuantity = GetFoodQuantity(food.Id);
+            int availableCapacity = food.MaxStack - currentQuantity;
+            int grantedQuantity = Math.Min(foodQuantity, availableCapacity);
+            if (grantedQuantity > 0)
+            {
+                _foodQuantities[food.Id] = currentQuantity + grantedQuantity;
+            }
+            _energy = ClampEnergy(_energy - energyCost);
+            _lastAppliedStudyCompletionId = completionId;
+            return TryCommitSynchronous(previous, null);
         }
 
         public void SetQuietMode(bool quietMode)
@@ -269,6 +437,24 @@ namespace UmaDesktopPet.Standalone.Runtime
             _automaticTimeAccumulator = 0.0;
         }
 
+        public void SetPersistenceEnabled(bool enabled)
+        {
+            if (_recordingModeEnabled && enabled)
+            {
+                return;
+            }
+            saveOnStateChanges = enabled;
+            saveOnLifecycleEvents = enabled;
+        }
+
+#if UNITY_EDITOR
+        public void SetPersistencePathForSmokeTest(string path)
+        {
+            _persistencePathOverride = path;
+            _persistenceWriteBlocked = false;
+        }
+#endif
+
         /// <summary>
         /// Restores configured starting state and clears cooldowns. Quiet mode is a
         /// user preference and is intentionally preserved.
@@ -279,6 +465,107 @@ namespace UmaDesktopPet.Standalone.Runtime
             PublishStateChanged();
         }
 
+        /// <summary>
+        /// Gives diagnostic captures a deterministic care state without ever
+        /// writing their synthetic food or Energy changes into the real save.
+        /// </summary>
+        public void ResetForSmokeTest()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            _recordingModeEnabled = false;
+            SetAutomaticTimeEnabled(false);
+            SetPersistenceEnabled(false);
+            _persistenceWriteBlocked = false;
+            ResetNeedsInternal();
+            PublishStateChanged();
+#else
+            throw new InvalidOperationException(
+                "Care-state smoke setup is unavailable in a release build.");
+#endif
+        }
+
+        /// <summary>
+        /// Starts deterministic, in-memory care state for the local recording
+        /// player without reading or changing the normal pet save.
+        /// </summary>
+        public void EnterRecordingMode()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UMA_RECORDING_TOOLS
+            SetAutomaticTimeEnabled(true);
+            saveOnStateChanges = false;
+            saveOnLifecycleEvents = false;
+            _persistenceWriteBlocked = false;
+            _quietMode = false;
+            ResetNeedsInternal();
+            _recordingModeEnabled = true;
+            _lastRealtimeSeconds = Time.realtimeSinceStartupAsDouble;
+            PublishStateChanged();
+#else
+            throw new InvalidOperationException(
+                "Recording care controls are unavailable in this build.");
+#endif
+        }
+
+        public bool SetMoodForRecording(PetMood mood)
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UMA_RECORDING_TOOLS
+            if (!_recordingModeEnabled || !IsValidMoodValue((int)mood))
+            {
+                return false;
+            }
+
+            _mood = mood;
+            PublishStateChanged();
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        public void ResetRecordingState()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || UMA_RECORDING_TOOLS
+            if (!_recordingModeEnabled)
+            {
+                throw new InvalidOperationException(
+                    "Recording mode must be entered before resetting it.");
+            }
+
+            _quietMode = false;
+            ResetNeedsInternal();
+            _recordingModeEnabled = true;
+            automaticTimeEnabled = true;
+            saveOnStateChanges = false;
+            saveOnLifecycleEvents = false;
+            _lastRealtimeSeconds = Time.realtimeSinceStartupAsDouble;
+            PublishStateChanged();
+#else
+            throw new InvalidOperationException(
+                "Recording care controls are unavailable in this build.");
+#endif
+        }
+
+        /// <summary>
+        /// Selects an exact deterministic Mood for visual diagnostics without
+        /// touching the user's persisted care state.
+        /// </summary>
+        public void SetMoodForSmokeTest(PetMood mood)
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (!IsValidMoodValue((int)mood))
+            {
+                throw new ArgumentOutOfRangeException("mood");
+            }
+            SetAutomaticTimeEnabled(false);
+            SetPersistenceEnabled(false);
+            _mood = mood;
+            PublishStateChanged();
+#else
+            throw new InvalidOperationException(
+                "Care-state smoke setup is unavailable in a release build.");
+#endif
+        }
+
         public bool LoadNow()
         {
             return LoadNow(UtcNowUnixSeconds());
@@ -286,6 +573,10 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         public bool LoadNow(long utcUnixSeconds)
         {
+            if (_recordingModeEnabled)
+            {
+                return false;
+            }
             ValidateUnixSeconds(utcUnixSeconds, "utcUnixSeconds");
             string path = PersistencePath;
             if (!File.Exists(path))
@@ -315,7 +606,13 @@ namespace UmaDesktopPet.Standalone.Runtime
                             _persistenceWriteBlocked = true;
                             return true;
                         }
-                        SaveNow(utcUnixSeconds);
+                    }
+                    if (saveVersion < CurrentSaveVersion &&
+                        !SaveNow(utcUnixSeconds))
+                    {
+                        Debug.LogWarning(
+                            "The pet-state migration is active in memory but " +
+                            "could not be saved yet.");
                     }
                     return true;
                 }
@@ -339,6 +636,10 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         public bool SaveNow(long utcUnixSeconds)
         {
+            if (_recordingModeEnabled)
+            {
+                return true;
+            }
             ValidateUnixSeconds(utcUnixSeconds, "utcUnixSeconds");
             if (_persistenceWriteBlocked)
             {
@@ -362,7 +663,9 @@ namespace UmaDesktopPet.Standalone.Runtime
                     CreateSaveJson(utcUnixSeconds),
                     new UTF8Encoding(false));
                 File.Copy(temporaryPath, path, true);
-                File.Delete(temporaryPath);
+                // The durable copy already succeeded. Failure to remove a stale
+                // temporary file must not roll a successful transaction back.
+                TryDeleteTemporaryFile(temporaryPath);
                 return true;
             }
             catch (Exception exception)
@@ -376,7 +679,19 @@ namespace UmaDesktopPet.Standalone.Runtime
         public string CreateSaveJson(long utcUnixSeconds)
         {
             ValidateUnixSeconds(utcUnixSeconds, "utcUnixSeconds");
-            var data = new SaveDataV2
+            PetFoodStackSnapshot[] foodStacks =
+                GetFoodStacksInCatalogOrder();
+            var savedFoodStacks = new FoodStackSaveData[foodStacks.Length];
+            for (int index = 0; index < foodStacks.Length; index++)
+            {
+                savedFoodStacks[index] = new FoodStackSaveData
+                {
+                    foodId = foodStacks[index].FoodId,
+                    quantity = foodStacks[index].Quantity
+                };
+            }
+
+            var data = new SaveDataV3
             {
                 version = CurrentSaveVersion,
                 moodState = (int)_mood,
@@ -384,13 +699,16 @@ namespace UmaDesktopPet.Standalone.Runtime
                 quietMode = _quietMode,
                 patCooldownRemainingSeconds = _patCooldownRemainingSeconds,
                 feedCooldownRemainingSeconds = _feedCooldownRemainingSeconds,
+                foodStacks = savedFoodStacks,
+                lastAppliedStudyCompletionId =
+                    _lastAppliedStudyCompletionId,
                 savedAtUnixSeconds = utcUnixSeconds
             };
             return JsonUtility.ToJson(data, true);
         }
 
         /// <summary>
-        /// Restores either the original prototype save or the current v2 format.
+        /// Restores the original prototype, v2 care state, or current v3 pantry.
         /// Invalid input leaves the current state untouched.
         /// </summary>
         public bool TryRestoreFromJson(
@@ -418,6 +736,9 @@ namespace UmaDesktopPet.Standalone.Runtime
             double restoredPatCooldown;
             double restoredFeedCooldown;
             long savedAtUnixSeconds;
+            var restoredFoodQuantities = new Dictionary<string, int>(
+                StringComparer.Ordinal);
+            long restoredStudyCompletionId = 0;
 
             if (version == 1)
             {
@@ -450,8 +771,11 @@ namespace UmaDesktopPet.Standalone.Runtime
                 restoredPatCooldown = legacy.patCooldownRemainingSeconds;
                 restoredFeedCooldown = legacy.feedCooldownRemainingSeconds;
                 savedAtUnixSeconds = legacy.savedAtUnixSeconds;
+                restoredFoodQuantities.Add(
+                    FoodCatalog.CarrotJellyId,
+                    StarterCarrotJellyQuantity);
             }
-            else if (version == CurrentSaveVersion)
+            else if (version == 2)
             {
                 SaveDataV2 data;
                 try
@@ -481,6 +805,51 @@ namespace UmaDesktopPet.Standalone.Runtime
                 restoredPatCooldown = data.patCooldownRemainingSeconds;
                 restoredFeedCooldown = data.feedCooldownRemainingSeconds;
                 savedAtUnixSeconds = data.savedAtUnixSeconds;
+                restoredFoodQuantities.Add(
+                    FoodCatalog.CarrotJellyId,
+                    StarterCarrotJellyQuantity);
+            }
+            else if (version == CurrentSaveVersion)
+            {
+                error = null;
+                SaveDataV3 data;
+                try
+                {
+                    data = JsonUtility.FromJson<SaveDataV3>(json);
+                }
+                catch (Exception exception)
+                {
+                    error = exception.Message;
+                    return false;
+                }
+
+                if (data == null ||
+                    !IsValidMoodValue(data.moodState) ||
+                    !IsFinite(data.energy) ||
+                    !IsFinite(data.patCooldownRemainingSeconds) ||
+                    !IsFinite(data.feedCooldownRemainingSeconds) ||
+                    data.lastAppliedStudyCompletionId < 0 ||
+                    data.savedAtUnixSeconds < 0 ||
+                    !TryValidateFoodStacks(
+                        data.foodStacks,
+                        restoredFoodQuantities,
+                        out error))
+                {
+                    if (string.IsNullOrEmpty(error))
+                    {
+                        error = "The save contains invalid values.";
+                    }
+                    return false;
+                }
+
+                restoredMood = (PetMood)data.moodState;
+                restoredEnergy = ClampEnergy(data.energy);
+                restoredQuietMode = data.quietMode;
+                restoredPatCooldown = data.patCooldownRemainingSeconds;
+                restoredFeedCooldown = data.feedCooldownRemainingSeconds;
+                restoredStudyCompletionId =
+                    data.lastAppliedStudyCompletionId;
+                savedAtUnixSeconds = data.savedAtUnixSeconds;
             }
             else
             {
@@ -507,6 +876,12 @@ namespace UmaDesktopPet.Standalone.Runtime
             _feedCooldownRemainingSeconds = Math.Max(
                 0.0,
                 restoredFeedCooldown - offlineSeconds);
+            _foodQuantities.Clear();
+            foreach (KeyValuePair<string, int> pair in restoredFoodQuantities)
+            {
+                _foodQuantities.Add(pair.Key, pair.Value);
+            }
+            _lastAppliedStudyCompletionId = restoredStudyCompletionId;
             _lastRealtimeSeconds = Time.realtimeSinceStartupAsDouble;
             _automaticTimeAccumulator = 0.0;
             _autosaveAccumulator = 0.0;
@@ -578,8 +953,99 @@ namespace UmaDesktopPet.Standalone.Runtime
             _energy = ClampEnergy(startingEnergy);
             _patCooldownRemainingSeconds = 0.0;
             _feedCooldownRemainingSeconds = 0.0;
+            _foodQuantities.Clear();
+            _foodQuantities.Add(
+                FoodCatalog.CarrotJellyId,
+                StarterCarrotJellyQuantity);
+            _lastAppliedStudyCompletionId = 0;
             _automaticTimeAccumulator = 0.0;
             _autosaveAccumulator = 0.0;
+        }
+
+        private bool TryCommitSynchronous(
+            PetNeedsSnapshot previous,
+            PetCareAction? careAction)
+        {
+            if (saveOnStateChanges && !SaveNow())
+            {
+                RestoreSnapshot(previous);
+                return false;
+            }
+
+            PublishStateChanged();
+            if (careAction.HasValue)
+            {
+                RaiseCareActionApplied(careAction.Value);
+            }
+            return true;
+        }
+
+        private void RestoreSnapshot(PetNeedsSnapshot snapshot)
+        {
+            _mood = snapshot.Mood;
+            _energy = snapshot.Energy;
+            _quietMode = snapshot.QuietMode;
+            _patCooldownRemainingSeconds =
+                snapshot.PatCooldownRemainingSeconds;
+            _feedCooldownRemainingSeconds =
+                snapshot.FeedCooldownRemainingSeconds;
+            _foodQuantities.Clear();
+            PetFoodStackSnapshot[] stacks = snapshot.CopyFoodStacks();
+            for (int index = 0; index < stacks.Length; index++)
+            {
+                _foodQuantities.Add(
+                    stacks[index].FoodId,
+                    stacks[index].Quantity);
+            }
+            _lastAppliedStudyCompletionId =
+                snapshot.LastAppliedStudyCompletionId;
+        }
+
+        private PetFoodStackSnapshot[] GetFoodStacksInCatalogOrder()
+        {
+            var stacks = new List<PetFoodStackSnapshot>(
+                _foodQuantities.Count);
+            IReadOnlyList<PetFoodDefinition> catalog = FoodCatalog.Items;
+            for (int index = 0; index < catalog.Count; index++)
+            {
+                PetFoodDefinition food = catalog[index];
+                int quantity;
+                if (_foodQuantities.TryGetValue(food.Id, out quantity) &&
+                    quantity > 0)
+                {
+                    stacks.Add(
+                        new PetFoodStackSnapshot(food.Id, quantity));
+                }
+            }
+            return stacks.ToArray();
+        }
+
+        private static bool TryValidateFoodStacks(
+            FoodStackSaveData[] savedStacks,
+            Dictionary<string, int> restoredQuantities,
+            out string error)
+        {
+            error = null;
+            FoodStackSaveData[] stacks =
+                savedStacks ?? new FoodStackSaveData[0];
+            for (int index = 0; index < stacks.Length; index++)
+            {
+                FoodStackSaveData stack = stacks[index];
+                PetFoodDefinition food;
+                if (stack == null ||
+                    !FoodCatalog.TryGet(stack.foodId, out food) ||
+                    stack.quantity <= 0 ||
+                    stack.quantity > food.MaxStack ||
+                    restoredQuantities.ContainsKey(food.Id))
+                {
+                    error =
+                        "The save contains an unknown, duplicate, or invalid " +
+                        "food stack.";
+                    return false;
+                }
+                restoredQuantities.Add(food.Id, stack.quantity);
+            }
+            return true;
         }
 
         private void PublishStateChanged()
@@ -648,8 +1114,6 @@ namespace UmaDesktopPet.Standalone.Runtime
             patMoodGainSteps = Mathf.Clamp(patMoodGainSteps, 0, 4);
             patReactionEnergyCost = Math.Max(0.0f, patReactionEnergyCost);
             patCooldownSeconds = Math.Max(0.0f, patCooldownSeconds);
-            feedMoodGainSteps = Mathf.Clamp(feedMoodGainSteps, 0, 4);
-            feedEnergyGain = Math.Max(0.0f, feedEnergyGain);
             feedCooldownSeconds = Math.Max(0.0f, feedCooldownSeconds);
             tapReactionEnergyCost = Math.Max(0.0f, tapReactionEnergyCost);
             lowEnergyThreshold = ClampEnergy(lowEnergyThreshold);
@@ -761,6 +1225,25 @@ namespace UmaDesktopPet.Standalone.Runtime
             return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
+        private static bool IsSmokeProcess()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            string[] arguments = Environment.GetCommandLineArgs();
+            for (int index = 0; index < arguments.Length; index++)
+            {
+                string argument = arguments[index];
+                if (argument != null &&
+                    argument.StartsWith(
+                        "--smoke-",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+#endif
+            return false;
+        }
+
         private static void ValidateElapsedSeconds(double value, string name)
         {
             if (!IsFinite(value) || value < 0.0)
@@ -830,6 +1313,27 @@ namespace UmaDesktopPet.Standalone.Runtime
             public double patCooldownRemainingSeconds;
             public double feedCooldownRemainingSeconds;
             public long savedAtUnixSeconds;
+        }
+
+        [Serializable]
+        private sealed class SaveDataV3
+        {
+            public int version;
+            public int moodState;
+            public float energy;
+            public bool quietMode;
+            public double patCooldownRemainingSeconds;
+            public double feedCooldownRemainingSeconds;
+            public FoodStackSaveData[] foodStacks;
+            public long lastAppliedStudyCompletionId;
+            public long savedAtUnixSeconds;
+        }
+
+        [Serializable]
+        private sealed class FoodStackSaveData
+        {
+            public string foodId;
+            public int quantity;
         }
     }
 }

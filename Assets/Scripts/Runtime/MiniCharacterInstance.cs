@@ -13,6 +13,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public Animator Animator { get; private set; }
         public PlayableIdleController IdleController { get; private set; }
         public MiniFaceExpressionController FaceController { get; private set; }
+        public PetAttachmentRig AttachmentRig { get; private set; }
 
         internal void Initialize(
             BundleLease bundleLease,
@@ -45,6 +46,21 @@ namespace UmaDesktopPet.Standalone.Runtime
             Animator = animator;
             IdleController = idleController;
             FaceController = faceController;
+        }
+
+        internal void SetAttachmentRig(PetAttachmentRig attachmentRig)
+        {
+            if (attachmentRig == null)
+            {
+                throw new ArgumentNullException("attachmentRig");
+            }
+            if (AttachmentRig != null)
+            {
+                throw new InvalidOperationException(
+                    "The character attachment rig is already initialized.");
+            }
+
+            AttachmentRig = attachmentRig;
         }
 
         private void OnDestroy()
