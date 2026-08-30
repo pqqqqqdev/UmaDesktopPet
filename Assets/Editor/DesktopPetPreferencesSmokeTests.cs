@@ -60,9 +60,13 @@ namespace UmaDesktopPet.Standalone.Editor
                     "the first-run hint should be remembered");
 
                 Assert(
-                    preferences.TrySave(PetCharacterCatalog.Oguri.Key, out error),
+                    preferences.TrySave(PetCharacterCatalog.Tachyon.Key, out error),
                     error);
                 Assert(preferences.TryLoad(out snapshot, out error), error);
+                AssertEqual(
+                    PetCharacterCatalog.Tachyon.Key,
+                    snapshot.SelectedCharacterKey,
+                    "changed selected character");
                 Assert(
                     snapshot.HasSeenInteractionHint,
                     "changing character should preserve the hint state");
@@ -101,20 +105,40 @@ namespace UmaDesktopPet.Standalone.Editor
                     snapshot.SelectedCharacterKey,
                     "corrupt-file fallback");
 
-                AssertEqual(1, PetCharacterCatalog.Selectable.Count, "selectable count");
+                AssertEqual(2, PetCharacterCatalog.Selectable.Count, "selectable count");
                 AssertEqual(
                     PetCharacterCatalog.Oguri,
                     PetCharacterCatalog.Selectable[0],
-                    "only selectable character");
+                    "first selectable character");
+                AssertEqual(
+                    PetCharacterCatalog.Tachyon,
+                    PetCharacterCatalog.Selectable[1],
+                    "second selectable character");
                 AssertEqual(1006, PetCharacterCatalog.Oguri.GameCharacterId, "Oguri ID");
                 AssertEqual("Oguri Cap", PetCharacterCatalog.Oguri.DisplayName, "display name");
                 AssertEqual("Oguri", PetCharacterCatalog.Oguri.ShortName, "short name");
+                AssertEqual(1032, PetCharacterCatalog.Tachyon.GameCharacterId, "Tachyon ID");
+                AssertEqual(
+                    "Agnes Tachyon",
+                    PetCharacterCatalog.Tachyon.DisplayName,
+                    "Tachyon display name");
+                AssertEqual(
+                    "Tachyon",
+                    PetCharacterCatalog.Tachyon.ShortName,
+                    "Tachyon short name");
 
                 PetCharacterProfile profile;
                 Assert(
                     PetCharacterCatalog.TryGet("oguri-cap", out profile),
                     "Oguri should resolve by key");
                 AssertEqual(PetCharacterCatalog.Oguri, profile, "resolved Oguri profile");
+                Assert(
+                    PetCharacterCatalog.TryGet("agnes-tachyon", out profile),
+                    "Tachyon should resolve by key");
+                AssertEqual(
+                    PetCharacterCatalog.Tachyon,
+                    profile,
+                    "resolved Tachyon profile");
                 Assert(
                     !PetCharacterCatalog.TryGet("not-supported", out profile),
                     "an unsupported key should not resolve");

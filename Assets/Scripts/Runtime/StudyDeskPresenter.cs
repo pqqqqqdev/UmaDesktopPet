@@ -14,6 +14,8 @@ namespace UmaDesktopPet.Standalone.Runtime
     [DisallowMultipleComponent]
     public sealed class StudyDeskPresenter : MonoBehaviour
     {
+        private const float AmbientFurnitureScale = 0.80f;
+        private const float AmbientFurnitureDropInCharacterHeights = 0.015f;
         private const string DeskAsset =
             "3d/env/set/set10001/prop/pfb_env_set10001_prop001_000";
         private const string DeskPrefabName = "pfb_env_set10001_prop001_000";
@@ -56,12 +58,24 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _initialized;
         private bool _visible;
         private bool _paused;
+        private bool _studyOwnsVisibility;
+        private bool _ambientOwnsVisibility;
         private bool _carrotDeskCharmVisible;
         private string _equippedDeskItemId = string.Empty;
 
         public bool IsVisible { get { return _visible; } }
 
         public bool IsPaused { get { return _paused; } }
+
+        /// <summary>
+        /// True while an ambient vignette owns the shared installed study
+        /// setup. Study and ambient ownership are independent so releasing the
+        /// vignette cannot hide a Study session that has already taken over.
+        /// </summary>
+        public bool IsAmbientVisibilityAcquired
+        {
+            get { return _ambientOwnsVisibility; }
+        }
 
         public bool UsesInstalledStudyProps { get; private set; }
 
@@ -137,10 +151,10 @@ namespace UmaDesktopPet.Standalone.Runtime
         public void Show(string equippedDeskItemId)
         {
             EnsureInitialized();
-            _visible = true;
+            _studyOwnsVisibility = true;
             _paused = false;
             SetEquippedDeskItem(equippedDeskItemId);
-            _visualRoot.gameObject.SetActive(true);
+            ApplyVisibilityOwnership();
 #if DEVELOPMENT_BUILD || UNITY_EDITOR
             LogInstalledRendererState();
 #endif
@@ -160,9 +174,50 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
-            _visible = false;
+            _studyOwnsVisibility = false;
             _paused = false;
-            _visualRoot.gameObject.SetActive(false);
+            ApplyVisibilityOwnership();
+        }
+
+        /// <summary>
+        /// Acquires the already-loaded authentic study furniture for an ambient
+        /// vignette. Procedural fallback furniture is deliberately unavailable
+        /// through this seam, so an ambient scene never presents generated props
+        /// as installed game assets.
+        /// </summary>
+        public bool TryAcquireAmbientVisibility()
+        {
+            if (!_initialized || !UsesInstalledStudyProps ||
+                _visualRoot == null)
+            {
+                return false;
+            }
+
+            _ambientOwnsVisibility = true;
+            ApplyVisibilityOwnership();
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+            LogInstalledRendererState();
+#endif
+            return true;
+        }
+
+        /// <summary>
+        /// Releases only ambient ownership. If Study acquired the setup before
+        /// vignette cancellation, the furniture remains visible until Study
+        /// performs its ordinary Hide call.
+        /// </summary>
+        public void ReleaseAmbientVisibility()
+        {
+            if (!_ambientOwnsVisibility)
+            {
+                return;
+            }
+
+            _ambientOwnsVisibility = false;
+            if (_initialized)
+            {
+                ApplyVisibilityOwnership();
+            }
         }
 
         /// <summary>
@@ -526,7 +581,10 @@ namespace UmaDesktopPet.Standalone.Runtime
             // normalize uniformly from the measured mesh-local Z extent. Keep
             // it on the world-slot desk and rotate only around Y to make a
             // readable diagonal in the desktop plane; it never follows a hand.
-            float penLength = height * 0.12f;
+            // This is intentionally larger than a realistic desk pen: the shop
+            // item is named and sold as the Red Pen, so it must remain clearly
+            // identifiable at the desktop pet's compact render size.
+            float penLength = height * 0.20f;
             const float sourceThicknessToLength = 0.01687f / 0.156749f;
             float penThickness = penLength * sourceThicknessToLength;
             return CreateInstalledProp(
@@ -535,10 +593,10 @@ namespace UmaDesktopPet.Standalone.Runtime
                 penPrefab,
                 new Vector3(penLength, penLength, penLength),
                 new Vector3(
-                    bounds.center.x + deskWidth * 0.29f,
+                    bounds.center.x + deskWidth * 0.37f,
                     deskTopY + penThickness * 0.5f + height * 0.002f,
                     deskCenterZ + deskDepth * 0.24f),
-                Quaternion.Euler(0.0f, 50.0f, 0.0f),
+                Quaternion.Euler(0.0f, 72.0f, 0.0f),
                 PropAxisMode.UniformFromSourceZ);
         }
 
@@ -1025,6 +1083,21 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 material.SetColor("_Color", Color.white);
             }
+            bool isTazunaRedPen = source.name.IndexOf(
+                "prop1008_00",
+                StringComparison.OrdinalIgnoreCase) >= 0;
+            if (material.HasProperty("_UseLuminanceTint"))
+            {
+                material.SetFloat(
+                    "_UseLuminanceTint",
+                    isTazunaRedPen ? 1.0f : 0.0f);
+            }
+            if (isTazunaRedPen && material.HasProperty("_LuminanceTint"))
+            {
+                material.SetColor(
+                    "_LuminanceTint",
+                    new Color(0.95f, 0.06f, 0.04f, 1.0f));
+            }
             if (material.HasProperty("_UseBackColor"))
             {
                 bool isWitNotebook = source.name.IndexOf(
@@ -1431,6 +1504,45 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
         }
 
+        private void ApplyVisibilityOwnership()
+        {
+            bool shouldBeVisible =
+                _studyOwnsVisibility || _ambientOwnsVisibility;
+            _visible = shouldBeVisible;
+            ApplyOwnerPose();
+            if (_visualRoot != null &&
+                _visualRoot.gameObject.activeSelf != shouldBeVisible)
+            {
+                _visualRoot.gameObject.SetActive(shouldBeVisible);
+            }
+        }
+
+        private void ApplyOwnerPose()
+        {
+            if (_visualRoot == null)
+            {
+                return;
+            }
+
+            // Study keeps the original calibrated composition. Ambient-only
+            // ownership scales the same authentic furniture toward the world
+            // origin so the desk sits below the face instead of reading as a
+            // foreground wall. Study always wins a simultaneous handoff.
+            bool ambientOnly = _ambientOwnsVisibility &&
+                !_studyOwnsVisibility;
+            _visualRoot.localPosition = ambientOnly
+                ? new Vector3(
+                    0.0f,
+                    -_characterHeight *
+                        AmbientFurnitureDropInCharacterHeights,
+                    0.0f)
+                : Vector3.zero;
+            _visualRoot.localRotation = Quaternion.identity;
+            _visualRoot.localScale = ambientOnly
+                ? Vector3.one * AmbientFurnitureScale
+                : Vector3.one;
+        }
+
         internal void ReleaseResources()
         {
             if (_visualRoot != null)
@@ -1443,6 +1555,8 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             _visible = false;
             _paused = false;
+            _studyOwnsVisibility = false;
+            _ambientOwnsVisibility = false;
             _carrotDeskCharmVisible = false;
             _equippedDeskItemId = string.Empty;
             _deskRewardRoots.Clear();

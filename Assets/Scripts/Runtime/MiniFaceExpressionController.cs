@@ -119,7 +119,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             Apply(SelectionFor(expression));
             ApplyCheek(expression);
             ScheduleBlink();
-            Debug.Log("Oguri face: " + expression + ".");
+            Debug.Log("Pet face: " + expression + ".");
         }
 
         public bool TryApplyDiagnostic(string value, out string error)
@@ -169,7 +169,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             _diagnosticOverride = true;
             _blinking = false;
             Apply(selection);
-            Debug.Log("Oguri diagnostic face: " + value + ".");
+            Debug.Log("Pet diagnostic face: " + value + ".");
             return true;
         }
 
@@ -215,7 +215,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             // Installed motion clips can contain material animation curves. Reapply
             // the selected reaction after playable evaluation so a body animation
-            // cannot replace Oguri's face with an unrelated mouth atlas cell.
+            // cannot replace the selected face with an unrelated mouth atlas cell.
             Apply(SelectionFor(_expression));
             ApplyCheek(_expression);
         }

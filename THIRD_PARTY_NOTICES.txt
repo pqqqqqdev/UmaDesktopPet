@@ -21,3 +21,17 @@ https://github.com/twbs/icons
 License: MIT
 The interface uses a small rasterized subset of the official icon set. The
 complete license text is copied into the packaged application's Licenses folder.
+
+Furniture Kit 2.0 table 3D model
+Created and distributed by Kenney
+https://kenney.nl/assets/furniture-kit
+License: Creative Commons Zero 1.0 Universal (CC0 1.0)
+http://creativecommons.org/publicdomain/zero/1.0/
+Selected table FBX SHA-256:
+753E11714F74C2D476DC0EECF6DE29EED66303F71EEF2E194E6EF0431ACCCE55
+UmaDesktopPet retains only the `table` model as its active app-owned source,
+narrows and rescales it for the desktop-pet composition, and replaces its
+material with a Tachyon laboratory palette. The resulting compact solid-top
+side table has no backboard or canopy. Credit is provided even though CC0 does
+not require it. Full provenance, the selected FBX SHA-256, and the original
+license notice are recorded under ThirdParty/KenneyFurnitureKit/.

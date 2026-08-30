@@ -4,6 +4,8 @@ Shader "UmaDesktopPet/StudyPropUnlit"
     {
         _MainTex ("Texture", 2D) = "white" {}
         _Color ("Color", Color) = (1, 1, 1, 1)
+        _LuminanceTint ("Luminance Tint", Color) = (1, 1, 1, 1)
+        _UseLuminanceTint ("Use Luminance Tint", Float) = 0
         _BackColor ("Back Color", Color) = (0.16, 0.055, 0.03, 1)
         _UseBackColor ("Use Back Color", Float) = 0
     }
@@ -45,6 +47,8 @@ Shader "UmaDesktopPet/StudyPropUnlit"
             SAMPLER(sampler_MainTex);
             float4 _MainTex_ST;
             float4 _Color;
+            float4 _LuminanceTint;
+            float _UseLuminanceTint;
             float4 _BackColor;
             float _UseBackColor;
 
@@ -62,6 +66,13 @@ Shader "UmaDesktopPet/StudyPropUnlit"
                     _MainTex,
                     sampler_MainTex,
                     input.uv) * _Color;
+                half luminance = dot(
+                    textured.rgb,
+                    half3(0.2126h, 0.7152h, 0.0722h));
+                textured.rgb = lerp(
+                    textured.rgb,
+                    luminance * _LuminanceTint.rgb,
+                    saturate((half)_UseLuminanceTint));
                 half useCover = _UseBackColor * (frontFace ? 1.0h : 0.0h);
                 half4 cover = half4(textured.rgb * _BackColor.rgb, 1.0h);
                 return lerp(textured, cover, useCover);
@@ -87,6 +98,8 @@ Shader "UmaDesktopPet/StudyPropUnlit"
             sampler2D _MainTex;
             float4 _MainTex_ST;
             fixed4 _Color;
+            fixed4 _LuminanceTint;
+            float _UseLuminanceTint;
             fixed4 _BackColor;
             float _UseBackColor;
 
@@ -113,6 +126,13 @@ Shader "UmaDesktopPet/StudyPropUnlit"
             fixed4 frag(v2f input, fixed facing : VFACE) : SV_Target
             {
                 fixed4 textured = tex2D(_MainTex, input.uv) * _Color;
+                fixed luminance = dot(
+                    textured.rgb,
+                    fixed3(0.2126, 0.7152, 0.0722));
+                textured.rgb = lerp(
+                    textured.rgb,
+                    luminance * _LuminanceTint.rgb,
+                    saturate(_UseLuminanceTint));
                 fixed useCover = _UseBackColor * (facing >= 0.0 ? 1.0 : 0.0);
                 fixed4 cover = fixed4(textured.rgb * _BackColor.rgb, 1.0);
                 return lerp(textured, cover, useCover);

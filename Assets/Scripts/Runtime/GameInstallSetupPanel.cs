@@ -14,6 +14,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private DesktopWindowController _window;
         private GameInstallPreferences _preferences;
+        private PetCharacterProfile _characterProfile;
         private string _sqliteLibraryPath;
         private string _pathInput = string.Empty;
         private string _message = string.Empty;
@@ -31,12 +32,15 @@ namespace UmaDesktopPet.Standalone.Runtime
         public void Initialize(
             DesktopWindowController window,
             GameInstallPreferences preferences,
-            string sqliteLibraryPath)
+            string sqliteLibraryPath,
+            PetCharacterProfile characterProfile)
         {
             _window = window;
             _preferences = preferences ?? throw new ArgumentNullException("preferences");
             _sqliteLibraryPath = sqliteLibraryPath ?? throw new ArgumentNullException(
                 "sqliteLibraryPath");
+            _characterProfile = characterProfile ?? throw new ArgumentNullException(
+                "characterProfile");
 
             if (_window != null)
             {
@@ -358,7 +362,8 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             GameCompatibilityReport report = GameCompatibilityProbe.Probe(
                 root,
-                _sqliteLibraryPath);
+                _sqliteLibraryPath,
+                _characterProfile);
             _checking = false;
             if (!report.IsCompatible || !report.Region.HasValue)
             {

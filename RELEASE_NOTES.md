@@ -1,33 +1,32 @@
-# Uma Desktop Pet v0.1.0-preview.5
+# Uma Desktop Pet v0.1.0-preview.6
 
-Oguri can study with you now 🥕
+Agnes Tachyon joins Uma Desktop Pet 🧪🥕
 
-## what's new
+## What's new
 
-- 25- and 50-minute study sessions with pause, resume, and stop controls
-- Oguri studies at her desk while a session is running
-- completed sessions earn Moni and Carrot Jelly and use Energy
-- a Shop and Inventory with three permanent desk items
-- a redesigned Home screen with Energy, Mood, feeding, and study status
-- resize Oguri and the menu together while the menu is open
+- choose Oguri Cap or Agnes Tachyon from **Settings > Desktop Uma**
+- each Uma uses her own installed idle and tap animations
+- your selected Uma is remembered after relaunching
+- richer randomized idle moments for both selectable Umas
+- Tazuna's Red Pen is now bigger, clearly angled, and properly red on the Study desk
+- cleaner interaction, reload, and character-switch cleanup
 
-## study rewards
+## Before opening it
 
-- 25 minutes: +1 Moni, +1 Carrot Jelly, -12 Energy
-- 50 minutes: +2 Moni, +2 Carrot Jelly, -24 Energy
-
-study timers run while the app is open. if the app closes during a session,
-the session reopens paused.
-
-## before opening it
-
-1. finish Download All in umamusume
+1. finish **Download All** in Umamusume
 2. close the game
-3. download and extract the whole ZIP
-4. run `UmaDesktopPet.exe`
+3. download the ZIP and `.sha256` file
+4. extract the complete ZIP to a short folder such as `%USERPROFILE%\UmaDesktopPet`
+5. run `UmaDesktopPet.exe`
 
-windows may show an unknown publisher warning because the app is not code
-signed yet.
+Windows may show an unknown publisher warning because the app is not code signed.
 
-if something breaks, open an Issue and tell me whether you use jp or global.
-send `Player.log`, but dont upload your game files.
+This is still a prerelease. The exact ZIP passed the editor smoke suite, package
+audit, and JP and Global startup checks on the development PC. The separate
+clean-PC JP/Global test is still pending.
+
+If something breaks, open an Issue, say whether you use JP or Global, and send
+`Player.log`. Please do not upload your game files.
+
+Unofficial fan project. Not affiliated with Cygames. No Umamusume game assets are
+bundled with or exported by the app.

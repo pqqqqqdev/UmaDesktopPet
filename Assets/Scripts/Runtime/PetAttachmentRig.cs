@@ -165,6 +165,7 @@ namespace UmaDesktopPet.Standalone.Runtime
     public static class PetAttachmentProfileCatalog
     {
         private const string OguriKey = "oguri-cap";
+        private const string TachyonKey = "agnes-tachyon";
         private const string LeftHandPath =
             "Position/Hip/Waist/Chest/Shoulder_L/Arm_L/Elbow_L/" +
             "Wrist_L/Hand_Attach_L";
@@ -191,11 +192,17 @@ namespace UmaDesktopPet.Standalone.Runtime
                         Vector3.zero)
                 });
 
+        public static readonly PetAttachmentProfile AgnesTachyon =
+            new PetAttachmentProfile(
+                TachyonKey,
+                new PetAttachmentSlotProfile[0]);
+
         private static readonly IReadOnlyDictionary<string, PetAttachmentProfile>
             Profiles = new ReadOnlyDictionary<string, PetAttachmentProfile>(
                 new Dictionary<string, PetAttachmentProfile>(StringComparer.Ordinal)
                 {
-                    { OguriCap.CharacterKey, OguriCap }
+                    { OguriCap.CharacterKey, OguriCap },
+                    { AgnesTachyon.CharacterKey, AgnesTachyon }
                 });
 
         public static bool TryGet(

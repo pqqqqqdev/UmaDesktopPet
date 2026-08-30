@@ -13,12 +13,14 @@ namespace UmaDesktopPet.Standalone.Runtime
     {
         private PetFocusState _focus;
         private OguriPetAnimationController _motions;
+        private IPetSignatureFeatureHost _signatureFeatures;
         private StudyDeskPresenter _desk;
         private bool _initialized;
 
         public void Initialize(
             PetFocusState focus,
             OguriPetAnimationController motions,
+            IPetSignatureFeatureHost signatureFeatures,
             StudyDeskPresenter desk)
         {
             if (_initialized)
@@ -34,6 +36,10 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 throw new ArgumentNullException("motions");
             }
+            if (signatureFeatures == null)
+            {
+                throw new ArgumentNullException("signatureFeatures");
+            }
             if (desk == null)
             {
                 throw new ArgumentNullException("desk");
@@ -41,6 +47,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             _focus = focus;
             _motions = motions;
+            _signatureFeatures = signatureFeatures;
             _desk = desk;
             _focus.StateChanged += HandleFocusStateChanged;
             _initialized = true;
@@ -87,21 +94,16 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
-            if (!_desk.IsVisible)
-            {
-                _desk.Show(snapshot.EquippedDeskItemId);
-            }
-            else
-            {
-                _desk.SetEquippedDeskItem(snapshot.EquippedDeskItemId);
-            }
-
+            // Claim Study ownership before cancelling an ambient vignette. The
+            // shared installed furniture then stays visible across the handoff.
+            _desk.Show(snapshot.EquippedDeskItemId);
             _desk.SetPaused(false);
             EnsureStudyMotion(false);
         }
 
         private void EnsureStudyMotion(bool paused)
         {
+            _signatureFeatures.Cancel();
             if (!_motions.HasStudyMotion)
             {
                 return;

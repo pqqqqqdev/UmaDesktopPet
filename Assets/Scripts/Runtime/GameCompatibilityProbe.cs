@@ -56,31 +56,17 @@ namespace UmaDesktopPet.Standalone.Runtime
 
     /// <summary>
     /// Verifies that a JP or Global install contains the local files needed by
-    /// the current Oguri build. Nothing is written, copied, or exported.
+    /// the selected desktop Uma. Nothing is written, copied, or exported.
     /// </summary>
     public static class GameCompatibilityProbe
     {
-        private const string BodyAsset =
-            "3d/chara/mini/body/mbdy1006_00/pfb_mbdy1006_00";
-        private const string HairAsset =
-            "3d/chara/mini/head/mchr1006_00/pfb_mchr1006_00_hair";
-        private const string FaceAsset =
-            "3d/chara/mini/head/mchr0001_00/pfb_mchr0001_00_face0";
-        private const string OguriHeadTexturePrefix =
-            "3d/chara/mini/head/mchr1006_00/textures/";
         private const string MoodAssetPrefix =
             "uianimation/flash/singlemode/statusicon/utx_ico_motivation_l_0";
         private const string CarrotJellyAsset = "item/item_icon_00035";
         private const string CarrotJellyMiniAsset = "item/item_icon_00034";
 
-        private static readonly string[] MotionAssets =
+        private static readonly string[] SharedMotionAssets =
         {
-            OguriPetAnimationController.IdleStartAsset,
-            OguriPetAnimationController.IdleLoopAsset,
-            OguriPetAnimationController.IdleEndAsset,
-            OguriPetAnimationController.TapStartAsset,
-            OguriPetAnimationController.TapLoopAsset,
-            OguriPetAnimationController.TapEndAsset,
             OguriPetAnimationController.PatHappyStartAsset,
             OguriPetAnimationController.PatHappyLoopAsset,
             OguriPetAnimationController.PatHappyEndAsset,
@@ -90,6 +76,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             OguriPetAnimationController.AmbientGreetingStartAsset,
             OguriPetAnimationController.AmbientGreetingLoopAsset,
             OguriPetAnimationController.AmbientGreetingEndAsset,
+            OguriPetAnimationController.DragLiftAsset,
             OguriPetAnimationController.DragHoldAsset
         };
 
@@ -97,6 +84,18 @@ namespace UmaDesktopPet.Standalone.Runtime
             string gameRoot,
             string sqlite3McLibraryPath)
         {
+            return Probe(
+                gameRoot,
+                sqlite3McLibraryPath,
+                PetCharacterCatalog.Oguri);
+        }
+
+        public static GameCompatibilityReport Probe(
+            string gameRoot,
+            string sqlite3McLibraryPath,
+            PetCharacterProfile characterProfile)
+        {
+            characterProfile = characterProfile ?? PetCharacterCatalog.Oguri;
             string normalizedRoot;
             if (string.IsNullOrWhiteSpace(gameRoot) ||
                 !LocalPathPolicy.TryGetLocalFullPath(gameRoot, out normalizedRoot))
@@ -167,9 +166,29 @@ namespace UmaDesktopPet.Standalone.Runtime
                 }
 
                 CharacterRecord character;
+                MiniCharacterAssemblyProfile baseAssemblyProfile;
+                PetCharacterMotionProfile motionProfile;
+                PetCharacterDefinition characterDefinition;
+                if (!PetCharacterDefinitions.TryGet(
+                    characterProfile.Key,
+                    out characterDefinition))
+                {
+                    return new GameCompatibilityReport(
+                        GameCompatibilityStatus.CharacterUnavailable,
+                        normalizedRoot,
+                        catalog.Region,
+                        characterProfile.DisplayName +
+                            " is not supported by this build.",
+                        "The selected character has no verified assembly or motion profile.",
+                        null,
+                        HasMoodUi(catalog),
+                        HasCarrotUi(catalog));
+                }
+                baseAssemblyProfile = characterDefinition.Assembly;
+                motionProfile = characterDefinition.Motions;
                 try
                 {
-                    character = catalog.GetCharacter(MiniCharacterAssembler.OguriCharacterId);
+                    character = catalog.GetCharacter(characterProfile.GameCharacterId);
                 }
                 catch (KeyNotFoundException exception)
                 {
@@ -177,7 +196,8 @@ namespace UmaDesktopPet.Standalone.Runtime
                         GameCompatibilityStatus.CharacterUnavailable,
                         normalizedRoot,
                         catalog.Region,
-                        "Oguri is not available in this installation.",
+                        characterProfile.DisplayName +
+                            " is not available in this installation.",
                         exception.Message,
                         null,
                         HasMoodUi(catalog),
@@ -203,32 +223,88 @@ namespace UmaDesktopPet.Standalone.Runtime
                     BundleRepository.DefaultShaderBundleName,
                     missing,
                     checkedNames);
-                CheckRequiredAsset(catalog, BodyAsset, missing, checkedNames);
-                CheckRequiredAsset(catalog, HairAsset, missing, checkedNames);
-                CheckRequiredAsset(catalog, FaceAsset, missing, checkedNames);
-
-                string skin = string.IsNullOrWhiteSpace(character.Skin)
-                    ? "0"
-                    : character.Skin;
-                string tailId = character.TailModelId.ToString("0000");
-                string tailAsset =
-                    "3d/chara/mini/tail/mtail" + tailId + "_00/" +
-                    "pfb_mtail" + tailId + "_00";
-                string sharedFaceTexturePrefix =
-                    "3d/chara/mini/head/mchr0001_00/textures/" +
-                    "tex_mchr0001_00_face0_" + skin;
-                string tailTexturePrefix =
-                    "3d/chara/mini/tail/mtail" + tailId + "_00/textures/" +
-                    "tex_mtail" + tailId + "_00_" +
-                    MiniCharacterAssembler.OguriCharacterId.ToString("0000");
-
-                CheckRequiredAsset(catalog, tailAsset, missing, checkedNames);
-                CheckRequiredPrefix(catalog, OguriHeadTexturePrefix, missing, checkedNames);
-                CheckRequiredPrefix(catalog, sharedFaceTexturePrefix, missing, checkedNames);
-                CheckRequiredPrefix(catalog, tailTexturePrefix, missing, checkedNames);
-                for (int index = 0; index < MotionAssets.Length; index++)
+                int installedSkin;
+                try
                 {
-                    CheckRequiredAsset(catalog, MotionAssets[index], missing, checkedNames);
+                    installedSkin = MiniCharacterAssembler.ResolveInstalledSkin(
+                        character.Skin,
+                        baseAssemblyProfile.Skin);
+                }
+                catch (InvalidDataException exception)
+                {
+                    return new GameCompatibilityReport(
+                        GameCompatibilityStatus.CatalogUnreadable,
+                        normalizedRoot,
+                        catalog.Region,
+                        characterProfile.ShortName +
+                            "'s installed character data is invalid. Repair or " +
+                            "update Umamusume, then try again.",
+                        exception.Message,
+                        null,
+                        HasMoodUi(catalog),
+                        HasCarrotUi(catalog));
+                }
+                MiniCharacterAssemblyProfile assemblyProfile =
+                    baseAssemblyProfile.WithInstalledAppearance(
+                        installedSkin,
+                        character.TailModelId > 0
+                            ? (int?)character.TailModelId
+                            : null,
+                        null);
+                CheckRequiredAsset(
+                    catalog,
+                    assemblyProfile.BodyAsset,
+                    missing,
+                    checkedNames);
+                CheckRequiredAsset(
+                    catalog,
+                    assemblyProfile.HairAsset,
+                    missing,
+                    checkedNames);
+                CheckRequiredAsset(
+                    catalog,
+                    assemblyProfile.FaceAsset,
+                    missing,
+                    checkedNames);
+                if (assemblyProfile.HasTail)
+                {
+                    CheckRequiredAsset(
+                        catalog,
+                        assemblyProfile.TailAsset,
+                        missing,
+                        checkedNames);
+                    CheckRequiredPrefix(
+                        catalog,
+                        assemblyProfile.TailTexturePrefix,
+                        missing,
+                        checkedNames);
+                }
+                CheckRequiredPrefix(
+                    catalog,
+                    assemblyProfile.HeadTexturePrefix,
+                    missing,
+                    checkedNames);
+                CheckRequiredPrefix(
+                    catalog,
+                    assemblyProfile.SharedFaceTexturePrefix,
+                    missing,
+                    checkedNames);
+
+                string[] motionAssets = SharedMotionAssets
+                    .Concat(new[]
+                    {
+                        motionProfile.Idle.StartAsset,
+                        motionProfile.Idle.LoopAsset,
+                        motionProfile.Idle.EndAsset,
+                        motionProfile.Tap.StartAsset,
+                        motionProfile.Tap.LoopAsset,
+                        motionProfile.Tap.EndAsset
+                    })
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                for (int index = 0; index < motionAssets.Length; index++)
+                {
+                    CheckRequiredAsset(catalog, motionAssets[index], missing, checkedNames);
                 }
 
                 bool moodUiAvailable = HasMoodUi(catalog);
@@ -236,9 +312,11 @@ namespace UmaDesktopPet.Standalone.Runtime
                 if (missing.Count > 0)
                 {
                     string recoveryMessage = catalog.Region == GameRegion.Global
-                        ? "Oguri's local game files are missing. Open Umamusume, " +
+                        ? characterProfile.ShortName +
+                            "'s local game files are missing. Open Umamusume, " +
                             "use Download All in Settings, then try again."
-                        : "Some Oguri game files are missing. Repair or update " +
+                        : "Some " + characterProfile.ShortName +
+                            " game files are missing. Repair or update " +
                             "Umamusume, then try again.";
                     return new GameCompatibilityReport(
                         GameCompatibilityStatus.RequiredFilesMissing,

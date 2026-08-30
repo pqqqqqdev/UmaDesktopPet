@@ -32,6 +32,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private DesktopWindowController _window;
         private OguriPetAnimationController _motions;
+        private IPetSignatureFeatureHost _signatureFeatures;
         private PetNeedsState _needs;
         private PetFocusState _focus;
         private PetStudyRewardService _studyRewards;
@@ -43,7 +44,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         private Camera _camera;
         private Renderer _mouthRenderer;
         private Transform _mouthTransform;
-        private PetCharacterProfile _characterProfile;
+        private PetCharacterDefinition _characterDefinition;
         private GameRegion _gameRegion;
         private string _gameRoot;
         private Action<string> _requestCharacterChange;
@@ -54,6 +55,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _dragging;
         private bool _dragUsesPetReaction;
         private bool _holdConsumed;
+        private bool _suppressPetClickUntilReleased;
         private bool _showMenu;
         private MenuPage _menuPage;
         private PetPanelShopSection _shopSection;
@@ -72,6 +74,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         private bool _recordingToolsEnabled;
         private bool _recordingToolsOpen;
         private bool _recordingAnimationsOpen;
+        private bool _applicationQuitting;
         private Vector2 _carrotReleasePosition;
         private Vector2 _mouthGuiPosition;
         private bool _hasMouthGuiPosition;
@@ -109,8 +112,8 @@ namespace UmaDesktopPet.Standalone.Runtime
         {
             get
             {
-                return _characterProfile != null
-                    ? _characterProfile.ShortName
+                return _characterDefinition != null
+                    ? _characterDefinition.Profile.ShortName
                     : "Pet";
             }
         }
@@ -143,6 +146,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public void Initialize(
             DesktopWindowController window,
             OguriPetAnimationController motions,
+            IPetSignatureFeatureHost signatureFeatures,
             PetNeedsState needs,
             PetFocusState focus,
             PetStudyRewardService studyRewards,
@@ -152,7 +156,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             InstalledFoodUiAssets foodUiAssets,
             Camera camera,
             Transform characterRoot,
-            PetCharacterProfile characterProfile,
+            PetCharacterDefinition characterDefinition,
             GameRegion gameRegion,
             string gameRoot,
             bool recordingToolsEnabled,
@@ -173,13 +177,17 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 throw new ArgumentNullException("motions");
             }
+            if (signatureFeatures == null)
+            {
+                throw new ArgumentNullException("signatureFeatures");
+            }
             if (needs == null)
             {
                 throw new ArgumentNullException("needs");
             }
-            if (characterProfile == null)
+            if (characterDefinition == null)
             {
-                throw new ArgumentNullException("characterProfile");
+                throw new ArgumentNullException("characterDefinition");
             }
             if (focus == null)
             {
@@ -196,6 +204,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             _window = window;
             _motions = motions;
+            _signatureFeatures = signatureFeatures;
             _needs = needs;
             _focus = focus;
             _studyRewards = studyRewards;
@@ -205,7 +214,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             _shopUiAssets = shopUiAssets;
             _foodUiAssets = foodUiAssets;
             _camera = camera;
-            _characterProfile = characterProfile;
+            _characterDefinition = characterDefinition;
             _gameRegion = gameRegion;
             _gameRoot = gameRoot ?? string.Empty;
             _recordingToolsEnabled = recordingToolsEnabled;
@@ -384,6 +393,15 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
+            if (_suppressPetClickUntilReleased)
+            {
+                if (!Input.GetMouseButton(0))
+                {
+                    _suppressPetClickUntilReleased = false;
+                }
+                return;
+            }
+
             if (_showMenu)
             {
                 return;
@@ -399,6 +417,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
             if (Input.GetMouseButtonDown(0))
             {
+                CancelVignette();
                 _pressActive = true;
                 _dragging = false;
                 _holdConsumed = false;
@@ -595,17 +614,20 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             PetPanelCharacterOption[] characterOptions =
-                new PetPanelCharacterOption[PetCharacterCatalog.Selectable.Count];
-            for (int index = 0; index < PetCharacterCatalog.Selectable.Count; index++)
+                new PetPanelCharacterOption[PetCharacterDefinitions.Selectable.Count];
+            for (int index = 0;
+                index < PetCharacterDefinitions.Selectable.Count;
+                index++)
             {
-                PetCharacterProfile profile = PetCharacterCatalog.Selectable[index];
+                PetCharacterProfile profile =
+                    PetCharacterDefinitions.Selectable[index].Profile;
                 characterOptions[index] = new PetPanelCharacterOption
                 {
                     Key = profile.Key,
                     DisplayName = profile.DisplayName,
                     Selected = string.Equals(
                         profile.Key,
-                        _characterProfile.Key,
+                        _characterDefinition.Key,
                         StringComparison.Ordinal)
                 };
             }
@@ -619,10 +641,11 @@ namespace UmaDesktopPet.Standalone.Runtime
                 Character = new PetPanelCharacterPresentation
                 {
                     HeaderName = PetName,
-                    Accent = _characterProfile.Theme.Accent,
-                    AccentSoft = _characterProfile.Theme.AccentSoft,
-                    Primary = _characterProfile.Theme.Primary,
-                    PrimaryHover = _characterProfile.Theme.PrimaryHover
+                    Accent = _characterDefinition.Profile.Theme.Accent,
+                    AccentSoft = _characterDefinition.Profile.Theme.AccentSoft,
+                    Primary = _characterDefinition.Profile.Theme.Primary,
+                    PrimaryHover =
+                        _characterDefinition.Profile.Theme.PrimaryHover
                 },
                 Moni = _focus.Moni,
                 Energy = _needs.Energy,
@@ -643,7 +666,7 @@ namespace UmaDesktopPet.Standalone.Runtime
                     _needs.CanFeed &&
                     carrotJellyQuantity > 0,
                 FeedLabel = studyActive
-                    ? "Oguri is studying"
+                    ? PetName + " is studying"
                     : carrotJellyQuantity <= 0
                         ? "Study to earn Carrot Jelly"
                         : _needs.CanFeed
@@ -665,6 +688,7 @@ namespace UmaDesktopPet.Standalone.Runtime
                 NextDeskItemCost = nextCost,
                 DeskPreviewTexture = deskPreview,
                 CharacterOptions = characterOptions,
+                SignatureIdleStatus = BuildSignatureIdleStatus(),
                 GameRegionLabel = _gameRegion == GameRegion.Japan
                     ? "JP"
                     : "Global",
@@ -674,13 +698,24 @@ namespace UmaDesktopPet.Standalone.Runtime
 #if UMA_RECORDING_TOOLS
                 RecordingAnimationsOpen = _recordingAnimationsOpen,
                 CanPlayRecordingAnimation = CanPlayRecordingAnimation(),
-                RecordingAnimationStatus = GetRecordingAnimationStatus()
+                RecordingAnimationStatus = GetRecordingAnimationStatus(),
+                Vignettes = BuildRecordingVignetteOptions()
 #endif
             };
         }
 
         private void HandlePanelCommand(PetPanelCommand command)
         {
+            if (command.Type != PetPanelCommandType.None)
+            {
+#if UMA_RECORDING_TOOLS
+                if (command.Type != PetPanelCommandType.RecordingPlayVignette)
+#endif
+                {
+                    CancelVignette();
+                }
+            }
+
             switch (command.Type)
             {
                 case PetPanelCommandType.Close:
@@ -728,6 +763,9 @@ namespace UmaDesktopPet.Standalone.Runtime
                         TryPlayRecordingAnimation(
                             (PetRecordingAnimation)command.Number);
                     }
+                    break;
+                case PetPanelCommandType.RecordingPlayVignette:
+                    TryPlayRecordingVignette(command.Value);
                     break;
 #endif
                 case PetPanelCommandType.RecordingSetMood:
@@ -915,6 +953,37 @@ namespace UmaDesktopPet.Standalone.Runtime
                 : "Couldn't equip that desk item.");
         }
 
+        private string BuildSignatureIdleStatus()
+        {
+            if (_characterDefinition == null ||
+                _characterDefinition.SignatureFeatures.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            PetSignatureFeatureDefinition configured =
+                _characterDefinition.SignatureFeatures[0];
+            if (_signatureFeatures != null)
+            {
+                for (int index = 0;
+                    index < _signatureFeatures.AvailableFeatures.Count;
+                    index++)
+                {
+                    if (string.Equals(
+                        configured.Id,
+                        _signatureFeatures.AvailableFeatures[index].Id,
+                        StringComparison.Ordinal))
+                    {
+                        return "Signature idle: " + configured.DisplayName +
+                            " · plays automatically";
+                    }
+                }
+            }
+
+            return configured.DisplayName +
+                " unavailable · Download All, then Reload";
+        }
+
         private bool CanUseRecordingTools()
         {
             return _recordingToolsEnabled &&
@@ -929,7 +998,9 @@ namespace UmaDesktopPet.Standalone.Runtime
         {
             return CanUseRecordingTools() &&
                 _motions != null &&
-                !_motions.IsBusy &&
+                (!_motions.IsBusy ||
+                    (_signatureFeatures != null &&
+                        _signatureFeatures.IsPlaying)) &&
                 !_focus.IsSessionActive &&
                 _carrotFeedPhase == CarrotFeedPhase.None &&
                 !_pressActive &&
@@ -938,6 +1009,12 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private string GetRecordingAnimationStatus()
         {
+            if (_signatureFeatures != null && _signatureFeatures.IsPlaying)
+            {
+                return "Playing · " +
+                    _signatureFeatures.CurrentDisplayName +
+                    " · " + _signatureFeatures.CurrentStageLabel;
+            }
             if (_focus != null && _focus.IsSessionActive)
             {
                 return "Study is active";
@@ -970,6 +1047,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private bool TryPlayRecordingAnimation(PetRecordingAnimation animation)
         {
+            CancelVignette();
             if (!CanPlayRecordingAnimation())
             {
                 return false;
@@ -1000,8 +1078,53 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 _playStudyCompletionHappy = false;
                 Debug.Log("Recording animation preview: " + animation + ".");
+                CloseMenu(false);
             }
             return started;
+        }
+
+        private bool TryPlayRecordingVignette(string vignetteId)
+        {
+            if (!CanUseRecordingTools() || _signatureFeatures == null ||
+                string.IsNullOrWhiteSpace(vignetteId))
+            {
+                return false;
+            }
+
+            CancelVignette();
+            if (!CanPlayRecordingAnimation() ||
+                !_signatureFeatures.TryPlay(vignetteId))
+            {
+                return false;
+            }
+
+            _playStudyCompletionHappy = false;
+            Debug.Log("Recording vignette preview: " + vignetteId + ".");
+            CloseMenu(false);
+            return true;
+        }
+
+        private PetPanelVignetteOption[] BuildRecordingVignetteOptions()
+        {
+            if (_signatureFeatures == null ||
+                _signatureFeatures.AvailableFeatures == null)
+            {
+                return new PetPanelVignetteOption[0];
+            }
+
+            int count = _signatureFeatures.AvailableFeatures.Count;
+            var result = new PetPanelVignetteOption[count];
+            for (int index = 0; index < count; index++)
+            {
+                PetSignatureFeatureDefinition feature =
+                    _signatureFeatures.AvailableFeatures[index];
+                result[index] = new PetPanelVignetteOption
+                {
+                    Id = feature.Id,
+                    DisplayName = feature.DisplayName
+                };
+            }
+            return result;
         }
 #endif
 
@@ -1062,18 +1185,23 @@ namespace UmaDesktopPet.Standalone.Runtime
                 0.0f,
                 0.0f,
                 characterArea.width - 16.0f,
-                Mathf.Max(36.0f, PetCharacterCatalog.Selectable.Count * 36.0f));
+                Mathf.Max(
+                    36.0f,
+                    PetCharacterDefinitions.Selectable.Count * 36.0f));
             _characterScroll = GUI.BeginScrollView(
                 characterArea,
                 _characterScroll,
                 characterContent);
-            for (int index = 0; index < PetCharacterCatalog.Selectable.Count; index++)
+            for (int index = 0;
+                index < PetCharacterDefinitions.Selectable.Count;
+                index++)
             {
-                PetCharacterProfile profile = PetCharacterCatalog.Selectable[index];
-                bool selected = _characterProfile != null &&
+                PetCharacterProfile profile =
+                    PetCharacterDefinitions.Selectable[index].Profile;
+                bool selected = _characterDefinition != null &&
                     string.Equals(
                         profile.Key,
-                        _characterProfile.Key,
+                        _characterDefinition.Key,
                         StringComparison.Ordinal);
                 string label = selected
                     ? profile.DisplayName + "  (Selected)"
@@ -1102,7 +1230,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             noteStyle.normal.textColor = GameTextColor;
             GUI.Label(
                 new Rect(x + 16.0f, y + 105.0f, MenuWidth - 32.0f, 32.0f),
-                "Only Oguri is supported in this build.",
+                "Choose which Uma lives on your desktop.",
                 noteStyle);
 
             GUI.Label(
@@ -1221,7 +1349,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             {
                 GUI.Label(
                     new Rect(x + 20.0f, y + 41.0f, MenuWidth - 40.0f, 38.0f),
-                    "Pick a timer and focus while Oguri studies with you.",
+                    "Pick a timer and focus while " + PetName +
+                        " studies with you.",
                     bodyStyle);
 
                 if (DrawGameButton(
@@ -1414,6 +1543,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         private void StartStudySession(int durationSeconds)
         {
             _playStudyCompletionHappy = false;
+            CancelVignette();
             if (_focus.StartSession(durationSeconds))
             {
                 _confirmStopStudy = false;
@@ -2457,9 +2587,20 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private void OnDisable()
         {
+            if (_applicationQuitting)
+            {
+                return;
+            }
+
+            CancelVignette();
             CloseMenu();
             CancelPress();
             _carrotVisible = false;
+        }
+
+        private void OnApplicationQuit()
+        {
+            _applicationQuitting = true;
         }
 
         private void OnDestroy()
@@ -2514,6 +2655,7 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return;
             }
 
+            CancelVignette();
             _window.SetSidePanelVisible(true, MenuSidecarWidth);
             _menuPosition = Vector2.zero;
             _showMenu = true;
@@ -2527,11 +2669,20 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         private void CloseMenu()
         {
+            CloseMenu(true);
+        }
+
+        private void CloseMenu(bool cancelVignette)
+        {
             if (!_showMenu)
             {
                 return;
             }
 
+            if (cancelVignette)
+            {
+                CancelVignette();
+            }
             CancelCarrotFeed(false);
             _showMenu = false;
             _menuPage = MenuPage.Main;
@@ -2540,6 +2691,12 @@ namespace UmaDesktopPet.Standalone.Runtime
             _recordingAnimationsOpen = false;
 #endif
             _window.SetSidePanelVisible(false, MenuSidecarWidth);
+            if (!cancelVignette)
+            {
+                _suppressPetClickUntilReleased = true;
+                Debug.Log(
+                    "Recording preview menu closed; playback continues.");
+            }
         }
 
         private void CancelPress()
@@ -2558,6 +2715,14 @@ namespace UmaDesktopPet.Standalone.Runtime
             _dragging = false;
             _dragUsesPetReaction = false;
             _holdConsumed = false;
+        }
+
+        private void CancelVignette()
+        {
+            if (_signatureFeatures != null)
+            {
+                _signatureFeatures.Cancel();
+            }
         }
 
         private static void Quit()

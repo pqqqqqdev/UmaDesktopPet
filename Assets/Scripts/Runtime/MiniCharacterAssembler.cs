@@ -8,23 +8,12 @@ using UnityEngine;
 namespace UmaDesktopPet.Standalone.Runtime
 {
     /// <summary>
-    /// Assembles the locally installed Oguri mini-character from game AssetBundles.
+    /// Assembles an explicitly profiled local mini-character from game AssetBundles.
     /// The assembler only holds live Unity objects; it never exports game-derived data.
     /// </summary>
     public sealed class MiniCharacterAssembler
     {
         public const int OguriCharacterId = 1006;
-
-        private const string BodyAsset =
-            "3d/chara/mini/body/mbdy1006_00/pfb_mbdy1006_00";
-        private const string HairAsset =
-            "3d/chara/mini/head/mchr1006_00/pfb_mchr1006_00_hair";
-        private const string FaceAsset =
-            "3d/chara/mini/head/mchr0001_00/pfb_mchr0001_00_face0";
-        private const string IdleAsset =
-            "3d/motion/mini/event/body/chara/chr1006_00/anm_min_eve_chr1006_00_idle01_loop";
-        private const string OguriHeadTexturePrefix =
-            "3d/chara/mini/head/mchr1006_00/textures/";
 
         private readonly GameDataCatalog _catalog;
         private readonly BundleRepository _bundles;
@@ -46,35 +35,68 @@ namespace UmaDesktopPet.Standalone.Runtime
 
         public MiniCharacterInstance AssembleOguri(Transform parent)
         {
-            CharacterRecord character = _catalog.GetCharacter(OguriCharacterId);
-            string skin = string.IsNullOrWhiteSpace(character.Skin) ? "0" : character.Skin;
-            string tailId = character.TailModelId.ToString("0000");
-            string tailAsset =
-                "3d/chara/mini/tail/mtail" + tailId + "_00/pfb_mtail" + tailId + "_00";
-            string sharedFaceTexturePrefix =
-                "3d/chara/mini/head/mchr0001_00/textures/" +
-                "tex_mchr0001_00_face0_" + skin;
-            string tailTexturePrefix =
-                "3d/chara/mini/tail/mtail" + tailId + "_00/textures/" +
-                "tex_mtail" + tailId + "_00_" + OguriCharacterId.ToString("0000");
+            return AssembleInstalled(
+                MiniCharacterAssemblyProfiles.OguriDefault,
+                parent);
+        }
 
-            List<string> headTextureNames = FindMatches(OguriHeadTexturePrefix);
-            headTextureNames.AddRange(FindMatches(sharedFaceTexturePrefix));
+        public MiniCharacterInstance AssembleInstalled(
+            MiniCharacterAssemblyProfile baseProfile,
+            Transform parent)
+        {
+            if (baseProfile == null)
+            {
+                throw new ArgumentNullException("baseProfile");
+            }
+
+            CharacterRecord character = _catalog.GetCharacter(
+                baseProfile.CharacterId);
+            int skin = ResolveInstalledSkin(
+                character.Skin,
+                baseProfile.Skin);
+            int? tailModelId = character.TailModelId > 0
+                ? (int?)character.TailModelId
+                : null;
+            MiniCharacterAssemblyProfile profile =
+                baseProfile.WithInstalledAppearance(
+                    skin,
+                    tailModelId,
+                    null);
+            return Assemble(profile, parent);
+        }
+
+        public MiniCharacterInstance Assemble(
+            MiniCharacterAssemblyProfile profile,
+            Transform parent)
+        {
+            if (profile == null)
+            {
+                throw new ArgumentNullException("profile");
+            }
+            if (profile.HasSeparateModelAttachment)
+            {
+                // Positive attachment_model_id naming has not been verified yet.
+                // Refuse it before opening any bundles rather than guessing a path.
+                throw new NotSupportedException(
+                    "Separate mini-character model attachments are not supported " +
+                    "until their installed naming convention is verified.");
+            }
+
+            List<string> headTextureNames = FindMatches(profile.HeadTexturePrefix);
+            headTextureNames.AddRange(FindMatches(profile.SharedFaceTexturePrefix));
             headTextureNames = headTextureNames
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
-            List<string> tailTextureNames = FindMatches(tailTexturePrefix);
+            List<string> tailTextureNames = profile.HasTail
+                ? FindMatches(profile.TailTexturePrefix)
+                : new List<string>();
 
             // Dynamic textures must be loaded before the prefabs that reference them.
             // Keep the texture roots first so the repository opens those bundles first too.
             var rootNames = new List<string>();
             rootNames.AddRange(headTextureNames);
             rootNames.AddRange(tailTextureNames);
-            rootNames.Add(BodyAsset);
-            rootNames.Add(HairAsset);
-            rootNames.Add(FaceAsset);
-            rootNames.Add(tailAsset);
-            rootNames.Add(IdleAsset);
+            rootNames.AddRange(profile.RequiredRootLogicalNames);
             rootNames = rootNames.Distinct(StringComparer.Ordinal).ToList();
 
             BundleLease lease = _bundles.AcquireManyWithShaderFirst(rootNames);
@@ -85,13 +107,19 @@ namespace UmaDesktopPet.Standalone.Runtime
                 List<Texture2D> headTextures = LoadTextures(lease, headTextureNames);
                 List<Texture2D> tailTextures = LoadTextures(lease, tailTextureNames);
 
-                GameObject bodyPrefab = LoadRequiredAsset<GameObject>(lease, BodyAsset);
-                GameObject hairPrefab = LoadRequiredAsset<GameObject>(lease, HairAsset);
-                GameObject facePrefab = LoadRequiredAsset<GameObject>(lease, FaceAsset);
-                GameObject tailPrefab = LoadRequiredAsset<GameObject>(lease, tailAsset);
-                AnimationClip idleClip = LoadRequiredAsset<AnimationClip>(lease, IdleAsset);
+                GameObject bodyPrefab =
+                    LoadRequiredAsset<GameObject>(lease, profile.BodyAsset);
+                GameObject hairPrefab =
+                    LoadRequiredAsset<GameObject>(lease, profile.HairAsset);
+                GameObject facePrefab =
+                    LoadRequiredAsset<GameObject>(lease, profile.FaceAsset);
+                GameObject tailPrefab = profile.HasTail
+                    ? LoadRequiredAsset<GameObject>(lease, profile.TailAsset)
+                    : null;
+                AnimationClip idleClip =
+                    LoadRequiredAsset<AnimationClip>(lease, profile.IdleAsset);
 
-                characterRoot = new GameObject("Oguri Cap");
+                characterRoot = new GameObject(profile.DisplayName);
                 if (parent != null)
                 {
                     characterRoot.transform.SetParent(parent, false);
@@ -100,10 +128,15 @@ namespace UmaDesktopPet.Standalone.Runtime
                 GameObject body = InstantiatePart(bodyPrefab, characterRoot.transform);
                 GameObject hair = InstantiatePart(hairPrefab, characterRoot.transform);
                 GameObject face = InstantiatePart(facePrefab, characterRoot.transform);
-                GameObject tail = InstantiatePart(tailPrefab, characterRoot.transform);
+                GameObject tail = tailPrefab != null
+                    ? InstantiatePart(tailPrefab, characterRoot.transform)
+                    : null;
 
                 AssignMiniFaceTextures(face, headTextures);
-                AssignTailTextures(tail, tailTextures);
+                if (tail != null)
+                {
+                    AssignTailTextures(tail, tailTextures);
+                }
 
                 Animator animator = MergeCharacterParts(
                     characterRoot,
@@ -144,6 +177,28 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
         }
 
+        internal static int ResolveInstalledSkin(
+            string value,
+            int fallbackSkin)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return fallbackSkin;
+            }
+
+            int skin;
+            if (!int.TryParse(
+                value,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out skin) || skin < 0 || skin > 99)
+            {
+                throw new InvalidDataException(
+                    "The installed character has an unsupported mini skin ID.");
+            }
+            return skin;
+        }
+
         private List<string> FindMatches(string prefix)
         {
             return _catalog.FindByPrefix(prefix)
@@ -170,7 +225,8 @@ namespace UmaDesktopPet.Standalone.Runtime
             if (bodyRenderer == null || bodyRenderer.bones == null || bodyRenderer.bones.Length == 0)
             {
                 throw new InvalidDataException(
-                    "The installed Oguri body does not expose a skinned body skeleton.");
+                    "The installed mini-character body does not expose a skinned " +
+                    "body skeleton.");
             }
 
             BodySkeleton skeleton = BodySkeleton.FromRenderer(bodyRenderer);
@@ -199,9 +255,12 @@ namespace UmaDesktopPet.Standalone.Runtime
             MoveRootChildren(hair.transform, characterRoot.transform);
             hair.SetActive(false);
 
-            RebindRenderers(tail, skeleton, retiredBones);
-            MoveRootChildren(tail.transform, characterRoot.transform);
-            tail.SetActive(false);
+            if (tail != null)
+            {
+                RebindRenderers(tail, skeleton, retiredBones);
+                MoveRootChildren(tail.transform, characterRoot.transform);
+                tail.SetActive(false);
+            }
 
             foreach (Animator prefabAnimator in
                 characterRoot.GetComponentsInChildren<Animator>(true))
@@ -432,6 +491,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             AssetBundle bundle = lease.GetRequiredBundle(logicalName);
             string expectedName = Path.GetFileName(logicalName);
             string[] assetNames = bundle.GetAllAssetNames();
+            string exactAssetName = null;
             for (int index = 0; index < assetNames.Length; index++)
             {
                 string assetName = assetNames[index];
@@ -443,26 +503,33 @@ namespace UmaDesktopPet.Standalone.Runtime
                     continue;
                 }
 
-                T exactAsset = bundle.LoadAsset<T>(assetName);
-                if (exactAsset != null)
+                if (exactAssetName != null && !string.Equals(
+                    exactAssetName,
+                    assetName,
+                    StringComparison.OrdinalIgnoreCase))
                 {
-                    return exactAsset;
+                    throw new InvalidDataException(
+                        "The bundle contains more than one exact asset named '" +
+                        expectedName + "': " + logicalName);
                 }
+                exactAssetName = assetName;
             }
 
-            T[] candidates = bundle.LoadAllAssets<T>();
-            if (candidates == null || candidates.Length == 0)
+            if (exactAssetName == null)
             {
                 throw new InvalidDataException(
-                    "The bundle contains no " + typeof(T).Name + ": " + logicalName);
+                    "The bundle does not contain the exact " + typeof(T).Name +
+                    " asset '" + expectedName + "': " + logicalName);
             }
 
-            T exact = candidates.FirstOrDefault(
-                candidate => string.Equals(
-                    candidate.name,
-                    expectedName,
-                    StringComparison.OrdinalIgnoreCase));
-            return exact != null ? exact : candidates[0];
+            T exactAsset = bundle.LoadAsset<T>(exactAssetName);
+            if (exactAsset == null)
+            {
+                throw new InvalidDataException(
+                    "The exact installed asset '" + expectedName +
+                    "' is not a " + typeof(T).Name + ": " + logicalName);
+            }
+            return exactAsset;
         }
 
         private sealed class BodySkeleton

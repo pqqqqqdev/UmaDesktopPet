@@ -142,7 +142,7 @@ namespace UmaDesktopPet.Standalone.Editor
         {
             PlayerSettings.companyName = "pqqqqqdev";
             PlayerSettings.productName = "Uma Desktop Pet";
-            PlayerSettings.bundleVersion = "0.1.0";
+            PlayerSettings.bundleVersion = "0.1.0-preview.6";
             PlayerSettings.defaultScreenWidth =
                 DesktopWindowController.NativeWindowWidth;
             PlayerSettings.defaultScreenHeight =
@@ -281,6 +281,15 @@ namespace UmaDesktopPet.Standalone.Editor
                 Path.Combine(
                     licensesDirectory,
                     "BootstrapIcons-MIT.txt"));
+            CopySupportFile(
+                Path.Combine(
+                    projectDirectory,
+                    "ThirdParty",
+                    "KenneyFurnitureKit",
+                    "LICENSE.txt"),
+                Path.Combine(
+                    licensesDirectory,
+                    "KenneyFurnitureKit-CC0-1.0.txt"));
         }
 
         private static void CopySupportFile(string source, string destination)

@@ -1,0 +1,22 @@
+Kenney Furniture Kit (2.0) - table 3D model
+Creator/distributor: Kenney
+Canonical source: https://kenney.nl/assets/furniture-kit
+Downloaded: 2026-08-23
+License: Creative Commons Zero 1.0 Universal (CC0 1.0)
+License URI: http://creativecommons.org/publicdomain/zero/1.0/
+
+Original source package:
+kenney_furniture-kit.zip
+SHA-256: E67652D0932CEE41683F74711C03D3E192A2AF9979EF8E6B237711F5482D46B0
+
+Selected upstream source file:
+Models/FBX format/table.fbx
+SHA-256: 753E11714F74C2D476DC0EECF6DE29EED66303F71EEF2E194E6EF0431ACCCE55
+
+UmaDesktopPet modification notice:
+The Furniture Kit's `table` model is copied into the app-owned source tree and
+is the active runtime source. It is imported as static 3D geometry, narrowed and
+rescaled for the desktop-pet composition, and its source material is replaced
+by the app-owned Tachyon laboratory palette at runtime. No backboard, canopy,
+or other Furniture Kit model is added to the scene. No endorsement by Kenney is
+implied.

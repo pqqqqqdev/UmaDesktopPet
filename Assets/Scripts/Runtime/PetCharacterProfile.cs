@@ -104,9 +104,22 @@ namespace UmaDesktopPet.Standalone.Runtime
                     new Color(0.25f, 0.63f, 0.31f, 1.0f),
                     new Color(0.31f, 0.72f, 0.37f, 1.0f)));
 
+        public static readonly PetCharacterProfile Tachyon =
+            new PetCharacterProfile(
+                "agnes-tachyon",
+                1032,
+                "Agnes Tachyon",
+                "Tachyon",
+                new PetCharacterTheme(
+                    new Color(0.56f, 0.78f, 0.25f, 1.0f),
+                    new Color(0.92f, 0.97f, 0.82f, 1.0f),
+                    new Color(0.19f, 0.55f, 0.42f, 1.0f),
+                    new Color(0.24f, 0.64f, 0.49f, 1.0f)));
+
         private static readonly PetCharacterProfile[] SelectableProfiles =
         {
-            Oguri
+            Oguri,
+            Tachyon
         };
 
         public static IReadOnlyList<PetCharacterProfile> Selectable

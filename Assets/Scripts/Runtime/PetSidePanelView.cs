@@ -52,6 +52,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         OpenRecordingAnimations,
         CloseRecordingAnimations,
         RecordingPlayAnimation,
+        RecordingPlayVignette,
 #endif
         RecordingSetMood,
         RecordingSetStudyRemaining,
@@ -92,6 +93,12 @@ namespace UmaDesktopPet.Standalone.Runtime
         public string Key;
         public string DisplayName;
         public bool Selected;
+    }
+
+    internal sealed class PetPanelVignetteOption
+    {
+        public string Id;
+        public string DisplayName;
     }
 
     internal sealed class PetPanelDeskItemModel
@@ -135,6 +142,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public int NextDeskItemCost;
         public Texture DeskPreviewTexture;
         public PetPanelCharacterOption[] CharacterOptions;
+        public string SignatureIdleStatus;
         public string GameRegionLabel;
         public string GameRoot;
         public bool RecordingToolsEnabled;
@@ -142,6 +150,7 @@ namespace UmaDesktopPet.Standalone.Runtime
         public bool RecordingAnimationsOpen;
         public bool CanPlayRecordingAnimation;
         public string RecordingAnimationStatus;
+        public PetPanelVignetteOption[] Vignettes;
     }
 
     /// <summary>
@@ -886,8 +895,23 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
             GUI.EndScrollView();
 
+            bool showSignatureIdle =
+                !string.IsNullOrWhiteSpace(model.SignatureIdleStatus);
+            float settingsOffset = showSignatureIdle ? 22.0f : 0.0f;
+            if (showSignatureIdle)
+            {
+                GUI.Label(
+                    new Rect(x, 180.0f, ContentWidth, 18.0f),
+                    model.SignatureIdleStatus,
+                    MutedStyle(9, TextAnchor.MiddleLeft));
+            }
+
             if (DrawToggle(
-                new Rect(x, 188.0f, ContentWidth, 28.0f),
+                new Rect(
+                    x,
+                    188.0f + settingsOffset,
+                    ContentWidth,
+                    28.0f),
                 model.QuietMode,
                 "Quiet mode"))
             {
@@ -895,17 +919,29 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             GUI.Label(
-                new Rect(x, 226.0f, ContentWidth, 18.0f),
+                new Rect(
+                    x,
+                    226.0f + settingsOffset,
+                    ContentWidth,
+                    18.0f),
                 model.GameRegionLabel + " game files",
                 LabelStyle(11, FontStyle.Bold, TextAnchor.MiddleLeft));
             GUI.Label(
-                new Rect(x, 246.0f, ContentWidth, 28.0f),
+                new Rect(
+                    x,
+                    246.0f + settingsOffset,
+                    ContentWidth,
+                    28.0f),
                 CompactPath(model.GameRoot),
                 WrappedStyle(9, TextAnchor.UpperLeft));
 
             PetPanelCommand result;
             if (DrawButton(
-                new Rect(x, 282.0f, ContentWidth, 28.0f),
+                new Rect(
+                    x,
+                    282.0f + settingsOffset,
+                    ContentWidth,
+                    28.0f),
                 "Change game files",
                 false,
                 true,
@@ -915,7 +951,11 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return result;
             }
             if (DrawButton(
-                new Rect(x, 317.0f, ContentWidth, 28.0f),
+                new Rect(
+                    x,
+                    317.0f + settingsOffset,
+                    ContentWidth,
+                    28.0f),
                 "Reload game files",
                 false,
                 true,
@@ -926,7 +966,11 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
             PetPanelCommand quitCommand;
             if (DrawButton(
-                new Rect(x, 365.0f, ContentWidth, 36.0f),
+                new Rect(
+                    x,
+                    365.0f + settingsOffset,
+                    ContentWidth,
+                    36.0f),
                 "Quit desktop pet",
                 false,
                 true,
@@ -936,7 +980,11 @@ namespace UmaDesktopPet.Standalone.Runtime
                 return quitCommand;
             }
             if (model.RecordingToolsEnabled && DrawButton(
-                new Rect(x, 409.0f, ContentWidth, 30.0f),
+                new Rect(
+                    x,
+                    409.0f + settingsOffset,
+                    ContentWidth,
+                    30.0f),
                 "Recording tools",
                 true,
                 true,
@@ -958,7 +1006,7 @@ namespace UmaDesktopPet.Standalone.Runtime
 #if UMA_RECORDING_TOOLS
             if (DrawTextAction(
                 new Rect(x + ContentWidth - 104.0f, 57.0f, 104.0f, 26.0f),
-                "Animations  ›"))
+                "Previews  ›"))
             {
                 return Command(PetPanelCommandType.OpenRecordingAnimations);
             }
@@ -1171,7 +1219,7 @@ namespace UmaDesktopPet.Standalone.Runtime
             float x = ContentLeft;
             GUI.Label(
                 new Rect(x, 59.0f, ContentWidth, 22.0f),
-                "Animations",
+                "Previews",
                 LabelStyle(16, FontStyle.Bold, TextAnchor.MiddleLeft));
 
             DrawTexture(
@@ -1240,8 +1288,53 @@ namespace UmaDesktopPet.Standalone.Runtime
             }
 
             GUI.Label(
-                new Rect(x, 270.0f, ContentWidth, 18.0f),
-                "Study: timer  ·  Drag: move Oguri",
+                new Rect(x, 269.0f, ContentWidth, 18.0f),
+                "Vignettes",
+                LabelStyle(11, FontStyle.Bold, TextAnchor.MiddleLeft));
+
+            PetPanelVignetteOption[] vignettes = model.Vignettes ??
+                new PetPanelVignetteOption[0];
+            if (vignettes.Length == 0)
+            {
+                GUI.Label(
+                    new Rect(x, 291.0f, ContentWidth, 38.0f),
+                    "No vignettes for this Uma",
+                    MutedStyle(10, TextAnchor.MiddleCenter));
+            }
+            else
+            {
+                float vignetteButtonWidth =
+                    (ContentWidth - gap * Mathf.Max(0, vignettes.Length - 1)) /
+                    vignettes.Length;
+                for (int index = 0; index < vignettes.Length; index++)
+                {
+                    PetPanelVignetteOption vignette = vignettes[index];
+                    if (vignette == null)
+                    {
+                        continue;
+                    }
+                    if (DrawButton(
+                        new Rect(
+                            x + index * (vignetteButtonWidth + gap),
+                            291.0f,
+                            vignetteButtonWidth,
+                            38.0f),
+                        vignette.DisplayName,
+                        true,
+                        model.CanPlayRecordingAnimation,
+                        out result,
+                        PetPanelCommandType.RecordingPlayVignette,
+                        0,
+                        vignette.Id))
+                    {
+                        return result;
+                    }
+                }
+            }
+
+            GUI.Label(
+                new Rect(x, 338.0f, ContentWidth, 18.0f),
+                "Study: timer  ·  Drag: move your Uma",
                 MutedStyle(10, TextAnchor.MiddleLeft));
 
             if (DrawButton(

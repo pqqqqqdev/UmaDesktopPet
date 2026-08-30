@@ -68,6 +68,14 @@ namespace UmaDesktopPet.Standalone.Runtime
                     pixels.Apply(false, false);
                     File.WriteAllBytes(cameraOutputPath, pixels.EncodeToPNG());
                     ValidateTransparency(pixels);
+                    int safeViewportGutter = Mathf.RoundToInt(
+                        ReadFloat("--smoke-safe-viewport-gutter", 0.0f));
+                    if (safeViewportGutter > 0)
+                    {
+                        ValidateSafeViewportGutter(
+                            pixels,
+                            Mathf.Clamp(safeViewportGutter, 1, 64));
+                    }
                     Debug.Log("Smoke frame: " + cameraOutputPath);
                 }
                 catch (Exception exception)
@@ -174,6 +182,76 @@ namespace UmaDesktopPet.Standalone.Runtime
                 throw new InvalidDataException(
                     "The desktop-pet smoke frame does not contain both transparent " +
                     "background and opaque character pixels.");
+            }
+        }
+
+        private static void ValidateSafeViewportGutter(
+            Texture2D pixels,
+            int requiredGutter)
+        {
+            // The diagnostic render texture temporarily changes camera.pixelRect to
+            // the full target. Derive the production viewport from the captured
+            // window dimensions instead, then audit every rendered pixel against it.
+            Rect viewport = DesktopWindowLayout.PhysicalPetViewportRect(
+                new Vector2(pixels.width, pixels.height));
+            int xMin = Mathf.Clamp(
+                Mathf.FloorToInt(viewport.xMin),
+                0,
+                pixels.width - 1);
+            int xMaxExclusive = Mathf.Clamp(
+                Mathf.CeilToInt(viewport.xMax),
+                xMin + 1,
+                pixels.width);
+            int yMin = Mathf.Clamp(
+                Mathf.FloorToInt(viewport.yMin),
+                0,
+                pixels.height - 1);
+            int yMaxExclusive = Mathf.Clamp(
+                Mathf.CeilToInt(viewport.yMax),
+                yMin + 1,
+                pixels.height);
+
+            int opaqueMinX = xMaxExclusive;
+            int opaqueMaxX = xMin - 1;
+            int opaqueMinY = yMaxExclusive;
+            int opaqueMaxY = yMin - 1;
+            Color32[] colors = pixels.GetPixels32();
+            for (int y = 0; y < pixels.height; y++)
+            {
+                for (int x = 0; x < pixels.width; x++)
+                {
+                    if (colors[y * pixels.width + x].a <= 16)
+                    {
+                        continue;
+                    }
+                    opaqueMinX = Mathf.Min(opaqueMinX, x);
+                    opaqueMaxX = Mathf.Max(opaqueMaxX, x);
+                    opaqueMinY = Mathf.Min(opaqueMinY, y);
+                    opaqueMaxY = Mathf.Max(opaqueMaxY, y);
+                }
+            }
+            if (opaqueMaxX < opaqueMinX || opaqueMaxY < opaqueMinY)
+            {
+                throw new InvalidDataException(
+                    "The desktop-pet viewport contains no rendered pixels.");
+            }
+
+            int left = opaqueMinX - xMin;
+            int right = xMaxExclusive - 1 - opaqueMaxX;
+            int bottom = opaqueMinY - yMin;
+            int top = yMaxExclusive - 1 - opaqueMaxY;
+            Debug.Log(
+                "SMOKE_SAFE_VIEWPORT: required=" + requiredGutter +
+                ", left=" + left +
+                ", right=" + right +
+                ", bottom=" + bottom +
+                ", top=" + top + ".");
+            if (left < requiredGutter || right < requiredGutter ||
+                bottom < requiredGutter || top < requiredGutter)
+            {
+                throw new InvalidDataException(
+                    "Rendered desktop-pet content entered the required " +
+                    "viewport gutter.");
             }
         }
 

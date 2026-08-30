@@ -22,12 +22,62 @@ namespace UmaDesktopPet.Standalone.Editor
 
         public static void Run()
         {
+            RunSupportedProfileCatalogTest();
             RunExactHandsTest();
             RunSyntheticCalibratedMouthTest();
             RunUniqueNameFallbackTest();
             RunMissingSlotFailClosedTest();
             RunWorldSocketCleanupTest();
             Debug.Log("Pet attachment rig smoke tests passed.");
+        }
+
+        private static void RunSupportedProfileCatalogTest()
+        {
+            PetAttachmentProfile profile;
+            Assert(
+                PetAttachmentProfileCatalog.TryGet(
+                    PetCharacterCatalog.Oguri.Key,
+                    out profile),
+                "Oguri attachment profile should resolve");
+            AssertEqual(
+                PetAttachmentProfileCatalog.OguriCap,
+                profile,
+                "resolved Oguri attachment profile");
+
+            Assert(
+                PetAttachmentProfileCatalog.TryGet(
+                    PetCharacterCatalog.Tachyon.Key,
+                    out profile),
+                "Tachyon attachment profile should resolve");
+            AssertEqual(
+                PetAttachmentProfileCatalog.AgnesTachyon,
+                profile,
+                "resolved Tachyon attachment profile");
+            AssertEqual(
+                PetCharacterCatalog.Tachyon.Key,
+                profile.CharacterKey,
+                "Tachyon attachment character key");
+            AssertEqual(0, profile.Slots.Count, "Tachyon declared slot count");
+
+            PetAttachmentSlotProfile slot;
+            Assert(
+                !profile.TryGetSlotProfile(PetAttachmentSlots.LeftHand, out slot),
+                "Tachyon must not publish an uncalibrated left-hand slot");
+            Assert(slot == null, "missing Tachyon left-hand profile should be null");
+
+            Assert(
+                !profile.TryGetSlotProfile(PetAttachmentSlots.RightHand, out slot),
+                "Tachyon must not publish an uncalibrated right-hand slot");
+            Assert(slot == null, "missing Tachyon right-hand profile should be null");
+
+            Assert(
+                !profile.TryGetSlotProfile(PetAttachmentSlots.Mouth, out slot),
+                "Tachyon must not publish an uncalibrated mouth slot");
+            Assert(slot == null, "missing Tachyon mouth profile should be null");
+            Assert(
+                !PetAttachmentProfileCatalog.TryGet("not-supported", out profile),
+                "unsupported characters must not inherit an attachment profile");
+            Assert(profile == null, "unsupported attachment profile should be null");
         }
 
         private static void RunExactHandsTest()

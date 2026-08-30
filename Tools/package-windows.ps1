@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.0",
+    [Parameter(Mandatory = $true)]
+    [string]$Version,
     [string]$BuildDirectory,
     [string]$OutputDirectory
 )
@@ -131,6 +132,10 @@ $supportFiles = @(
         Source = "ThirdParty\BootstrapIcons\LICENSE"
         Destination = "Licenses\BootstrapIcons-MIT.txt"
     }
+    @{
+        Source = "ThirdParty\KenneyFurnitureKit\LICENSE.txt"
+        Destination = "Licenses\KenneyFurnitureKit-CC0-1.0.txt"
+    }
 )
 foreach ($supportFile in $supportFiles) {
     $source = Join-Path $projectRoot $supportFile.Source
@@ -161,6 +166,16 @@ $hashLine = "$($hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($
     $hashPath,
     $hashLine + [Environment]::NewLine,
     [System.Text.UTF8Encoding]::new($false))
+
+$auditScript = Join-Path $PSScriptRoot "audit-windows-package.ps1"
+if (-not (Test-Path -LiteralPath $auditScript -PathType Leaf)) {
+    throw "Required package audit script is missing: $auditScript"
+}
+& $auditScript `
+    -Version $Version `
+    -PackageDirectory $packageDirectory `
+    -ZipPath $zipPath `
+    -SidecarPath $hashPath
 
 Write-Host "Packaged: $packageDirectory"
 Write-Host "Archive:  $zipPath"
